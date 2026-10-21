@@ -1,0 +1,6 @@
+# your EPROM dumps and everything built from them stay on your PC
+dumps/*
+!dumps/README.md
+build/
+__pycache__/
+*.pyc
