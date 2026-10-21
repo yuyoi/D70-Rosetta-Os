@@ -7,7 +7,7 @@ Code + data live in ROM page 0 after the boot stream (file 0x0920-0x0FFF, run at
 the player has already selected). RAM: the player's parked buffer 0xE000-0xE9FF is free while the menu runs.
 
 Screen (240 x 64, T6963C, text layer XOR graphics layer):
-  text   = 40 x 8 chars from the LCD's own font at LCD 0x1400 (codes = ASCII - 0x20)
+  text   = 40 x 8 chars from the LCD's own font at LCD 0x1400 (codes = ASCII: stock loads its own ASCII font into the LCD's CG RAM; 0 = blank)
   row 0  = black tab with the page title (text shows white), a line under the rest, status right-aligned
   rows 1-7 = items: label left, value / '>' right; the selected row is a black bar; scroll bar in col 39
 Keys (stock panel scan ported from 0xA971, bitmap = MAME's KEY0-7 order, set bit = pressed):
@@ -48,7 +48,7 @@ KEYTAB = [  # bank (D378+n), mask, id, repeat
 
 
 def txt(s):
-    return bytes(ord(c) - 0x20 for c in s) + b'\xff'
+    return bytes(ord(c) for c in s) + b'\xff'
 
 
 DATA_RAM = 0xE300                 # pages, name tables and strings run from RAM
@@ -255,10 +255,10 @@ def build(bank_copy, ext=None, split=None):
     a.L('rputs'); a.lcall('strlen'); a.ldbze(W1, T); a.sub(DST, W1); a.sjmp('puts')   # S ends right before DST
     a.L('numstr')                                       # V = 0..255 -> NB, no leading zeros
     a.ldi(W2, NB); a.clrb(KB); a.ldbi(T, 100); a.lcall('nd'); a.ldbi(T, 10); a.lcall('nd')
-    a.ldb(X, V); a.addbi(X, 0x10); a.stb_pi(W2, X); a.ldbi(X, 0xFF); a.stb_pi(W2, X); a.ret()
+    a.ldb(X, V); a.addbi(X, 0x30); a.stb_pi(W2, X); a.ldbi(X, 0xFF); a.stb_pi(W2, X); a.ret()
     a.L('nd'); a.clrb(X)
     a.L('nd1'); a.cmpb(V, T); J('JNC', 'nd2'); a.subb(V, T); a.incb(X); a.sjmp('nd1')
-    a.L('nd2'); a.orb(KB, X); a.cmpbi(KB, 0); J('JE', 'pu1'); a.addbi(X, 0x10); a.stb_pi(W2, X); a.ret()
+    a.L('nd2'); a.orb(KB, X); a.cmpbi(KB, 0); J('JE', 'pu1'); a.addbi(X, 0x30); a.stb_pi(W2, X); a.ret()
 
     # ---- T6963C (same handshakes as the stock driver)
     a.L('wst'); a.ldb_abs(ST, LCD_C); a.andbi(ST, 3); a.cmpbi(ST, 3); J('JNE', 'wst'); a.ret()

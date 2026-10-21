@@ -12,7 +12,7 @@ NAME = {v: k for k, v in SFR.items()}
 class LCD:
     def __init__(self):
         self.ram = bytearray(0x2000); self.adp = 0; self.args = []; self.auto = None; self.mode = None
-        self.rd = 0; self.log = []
+        self.rd = 0; self.log = []; self.homes = {}
 
     def data_w(self, v):
         if self.auto == 'w':
@@ -23,6 +23,8 @@ class LCD:
     def cmd_w(self, c):
         if c == 0x24:
             self.adp = self.args[-2] | self.args[-1] << 8
+        elif 0x40 <= c <= 0x43:
+            self.homes[c] = self.args[-2] | self.args[-1] << 8
         elif c == 0xB0:
             self.auto = 'w'
         elif c == 0xB2:
@@ -31,6 +33,9 @@ class LCD:
             self.rd = self.ram[self.adp & 0x1FFF]; self.adp += 1
         elif c & 0xF0 == 0x90:
             self.mode = c
+        elif c & 0xF0 == 0xF0:                         # bit set (F8-FF) / reset (F0-F7) at the address pointer
+            a = self.adp & 0x1FFF; b = 1 << (c & 7)
+            self.ram[a] = (self.ram[a] | b) if c & 8 else (self.ram[a] & ~b)
         else:
             raise RuntimeError('unexpected LCD cmd %02X' % c)
         self.log.append(c); self.args = []
@@ -40,7 +45,7 @@ class Sim:
     def __init__(self, img, ram_fill=0x5A, hold_pc=None, tick=1):
         self.hooks = {}; self.tick = tick; self.tx = bytearray()
         self.img = img; self.reg = bytearray(256); self.ram = bytearray([ram_fill]) * 0x4000
-        self.bank = 2; self.lcd = LCD(); self.t1 = 0; self.c = self.z = False
+        self.bank = 2; self.lcd = LCD(); self.t1 = 0; self.c = self.z = self.lt = False
         self.frames = []; self.hold_pc = hold_pc
         self.ic6 = bytes((i * 7 + (i >> 8)) & 255 for i in range(0x8000))
 
@@ -89,7 +94,8 @@ class Sim:
         if m:
             r = self.regno(m.group(1)); inc = 2 if w else 1; post = bool(m.group(2))
             def g():
-                ad = self.rw(r); v = rd(ad)
+                ad = self.rw(r); assert not (w and ad & 1), 'word read at odd address %04X' % ad
+                v = rd(ad)
                 if post: self.ww(r, ad + inc)
                 return v
             def st(v):
@@ -99,6 +105,7 @@ class Sim:
         m = re.fullmatch(r'([0-9A-F]+)\[(\w+)\]', s)
         if m:
             ad = (int(m.group(1), 16) + self.rw(self.regno(m.group(2)))) & 0xFFFF
+            assert not (w and ad & 1), 'word access at odd address %04X' % ad
             return (lambda: rd(ad)), (lambda v: wr(ad, v))
         r = self.regno(s)
         return (lambda: rd(r)), (lambda v: wr(r, v))
@@ -123,7 +130,9 @@ class Sim:
             w = not (mn.endswith('B') and mn != 'SUB')      # SUB is a word op
             if pc == self.hold_pc:
                 self.frames.append(bytes(self.lcd.ram[0:2560]))
-            if mn == 'PUSHF':
+            if mn in ('DI', 'EI', 'NOP'):
+                pass
+            elif mn == 'PUSHF':
                 self.push(self.reg[0x08] << 8 | int(self.c)); self.reg[0x08] = 0
             elif mn == 'POPF':
                 v = self.pop(); self.reg[0x08] = v >> 8
@@ -137,6 +146,19 @@ class Sim:
                 self.opnd(ops[0], True)[1](self.opnd(ops[1], False)[0]())
             elif mn in ('ST', 'STB'):
                 self.opnd(ops[0], w)[1](self.opnd(ops[1], w)[0]())
+            elif mn in ('MULU', 'MULUB', 'DIVUB'):
+                if mn == 'MULU' and len(ops) == 2:          # long dst = dst word * src word
+                    d = self.regno(ops[0]); r = self.rw(d) * self.opnd(ops[1], True)[0]()
+                    self.ww(d, r & 0xFFFF); self.ww(d + 2, r >> 16)
+                elif mn == 'MULUB' and len(ops) == 3:       # word dst = byte * byte
+                    d = self.regno(ops[0]); r = self.opnd(ops[1], False)[0]() * self.opnd(ops[2], False)[0]()
+                    self.ww(d, r)
+                elif mn == 'MULUB':                         # word dst = dst byte * src byte
+                    d = self.regno(ops[0]); r = self.rb(d) * self.opnd(ops[1], False)[0]()
+                    self.ww(d, r)
+                else:                                       # DIVUB: word dst / byte -> lo quotient, hi remainder
+                    d = self.regno(ops[0]); n = self.rw(d); v = self.opnd(ops[1], False)[0]()
+                    self.wb(d, n // v); self.wb(d + 1, n % v)
             elif mn in ('ADD', 'ADDB', 'SUB', 'SUBB', 'CMP', 'CMPB', 'ANDB', 'ORB', 'XORB'):
                 msk = 0xFFFF if w else 0xFF
                 g, st = self.opnd(ops[0], w)
@@ -145,7 +167,10 @@ class Sim:
                 else:
                     b_ = self.opnd(ops[1], w)[0](); a_ = g()
                 if mn.startswith('ADD'): r = a_ + b_; self.c = r > msk
-                elif mn[:3] in ('SUB', 'CMP'): r = a_ - b_; self.c = a_ >= b_
+                elif mn[:3] in ('SUB', 'CMP'):
+                    r = a_ - b_; self.c = a_ >= b_
+                    sb = 0x8000 if w else 0x80
+                    self.lt = (a_ - (a_ & sb) * 2) < (b_ - (b_ & sb) * 2)
                 elif mn == 'ANDB': r = a_ & b_
                 elif mn == 'ORB': r = a_ | b_
                 else: r = a_ ^ b_
@@ -163,9 +188,11 @@ class Sim:
                 elif mn in ('SHR', 'SHRB'): v >>= int(ops[1][1:])
                 else: v = {'INC': v + 1, 'DEC': v - 1, 'DECB': v - 1, 'CLRB': 0, 'INCB': v + 1, 'CLR': 0}[mn]
                 v &= msk; st(v); self.z = v == 0
-            elif mn in ('JE', 'JNE', 'JC', 'JNC', 'JH', 'JNH'):
+            elif mn in ('JE', 'JNE', 'JC', 'JNC', 'JH', 'JNH', 'JGT', 'JLE', 'JGE', 'JLT'):
                 take = {'JE': self.z, 'JNE': not self.z, 'JC': self.c, 'JNC': not self.c,
-                        'JH': self.c and not self.z, 'JNH': (not self.c) or self.z}[mn]
+                        'JH': self.c and not self.z, 'JNH': (not self.c) or self.z,
+                        'JLT': self.lt, 'JGE': not self.lt, 'JGT': not self.lt and not self.z,
+                        'JLE': self.lt or self.z}[mn]
                 if take: nxt = tg
             elif mn in ('JBC', 'JBS'):
                 r, bit = ops[0].split('.'); bit = int(bit)

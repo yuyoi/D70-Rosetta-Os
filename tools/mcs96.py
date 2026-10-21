@@ -141,3 +141,4 @@ def decode(d, p, pc=None):
     if op == 0x1B:
         return ('XCHB   %s, %s' % (reg(d[q + 2]), reg(d[q + 1])), q + 3 - p, None, None)
     return ('.db %02X' % d[p], 1, 'bad', None)
+

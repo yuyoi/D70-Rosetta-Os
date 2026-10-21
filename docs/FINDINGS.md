@@ -88,6 +88,26 @@ into the 32 KB image. It's how we will find bytes that are safe for Rosetta's se
 
 ## MAME
 
-MAME has a D-70 driver. 0.270 runs it (the newest build crashed at start on our Norwegian Windows). The panel
-scan emulation drops key presses; a Lua read tap on `D378-D37F` gets them in. With a blank IC6 the emulated
-unit sits on the "No RAM Card!" popup, so it is not a full test bench yet.
+MAME has a D-70 driver. 0.270 runs it (the newest build crashed at start on our Norwegian Windows). It is a
+working test bench for Rosetta OS with the debugger on (`-debug -debugger none`) and a Lua script:
+- keys: a breakpoint at page 4 0xA5DB (right after the panel scan) ORs the key bit into `D378-D37F`
+  (MAME's scan drops panel keys, and Lua read taps don't reach the CPU's own reads);
+- CMPL (C5) is missing from MAME's CPU core: two conditional breakpoints at page 5 0xA006 stand in for it;
+- with a blank IC6 every stored item points at the RAM card and the popup loops: an emulator-only copy of the
+  build with fixed 0x3E23 = CLRC ; RET gets past it (never burn that copy);
+- debugger breakpoint numbers are hex.
+
+## v0.3-v0.5: runtime menu findings
+
+- **Home bank:** boot sets R54 = 2 (0x117F). Stock code expects ROM page 2 in 0x8000-0xBFFF and calls it directly
+  (e.g. 0x385B LCALL 8496). Code on another page must call stock routines through the far stubs
+  (0x1050/53/56/59/5C/5F = pages 2/3/4/5/6/7: push R54, push #16E9, bank in, BR [R1A]; 0x16E9 banks back).
+- **Main loop:** 0x1470; the UI step is LCALL 33FF at 0x151D. Panel scan page 4 0xA971 fills D378-D37F, key
+  reader page 4 0xA5D8 (via LD R1A,#8006 ; LCALL 1056) returns C set and R1C = key code.
+- **Parameters:** SysEx address table page 5 0xA040. Read 0x9DEF (RD6:RD4 flat address -> RCA), write 0x9E7E
+  (RCA -> address, clamps, dirty bits in RDE), apply 0x10CB via the page-2 stub. Flat address = a2<<14 | a1<<7 | a0.
+  Temporary tone: 0x0351 + (part*4 + layer)*0x3E + offset. Patch layer: 0x019E + part*0x57 + 0x23 + layer*0x0D + offset.
+- **LCD pages:** stock text at 0x1400 and 0x1540 (draw base R9A, shown R9C), graphics 0x0000 and 0x0A00 (R9E, RA0),
+  CG RAM 0x1800 (stock loads an ASCII font, so text codes are ASCII). Free text RAM: 0x1680-0x17FF.
+- **Words at odd addresses** read the even word (A0 ignored): tables of pointers must be word aligned.
+- **CMPL (opcode C5)** is used by the stock SysEx code (page 5 0xA006); MAME 0.270's CPU core lacks it.

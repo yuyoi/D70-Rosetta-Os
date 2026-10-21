@@ -22,6 +22,8 @@ PS, P, L, Q, T, V, HD, O, A, SV, TM, TD, X, ST, AD = (0x30, 0x32, 0x34, 0x36, 0x
 SAVED = list(range(0x1C, 0x4C, 2))
 MENU = 0x8920              # menu.py menu_entry (ROM page 0, bank 0)
 KEY_EDIT = 0xD37D          # stock power-on key bank 5, bit 7 = [EDIT]
+KEY_EXIT = 0xD37C          # bank 4, bit 7 = [EXIT]
+MENU_ON = 0xC400           # synth.py M_ON: 2 = open on the first main-loop pass
 TIMER1, INT_PEND, R54, RA2 = 0x0A, 0x09, 0x54, 0xA2
 
 
@@ -59,6 +61,9 @@ def build():
     a.ldi(AD, GAP); a.lcall('setaddr'); a.ldi(L, GB); a.lcall('aw_zero')
     a.ldb(X, RA2); a.orbi(X, 0x90); a.lcall('cmd')
     a.L('out')
+    a.ldb_abs(T, KEY_EXIT); a.jbs(T, 7, 'stock')      # [EXIT] held at power-on: plain D-70, no menu
+    a.ldbi(T, 2); a.stb_abs(MENU_ON, T)                # the SYNTH engine opens the Rosetta menu on its first pass
+    a.L('stock')
     a.stb_abs(BANK, R54)                        # stock's bank back
     for r in reversed(SAVED): a.pop(r)
     a.popf()
