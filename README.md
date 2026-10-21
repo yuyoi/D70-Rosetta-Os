@@ -2,6 +2,8 @@
 
 <p align="center"><img src="docs/rosetta_boot_d70.gif" width="720" alt="Hex girl boot animation on the D-70 LCD"></p>
 
+<p align="center"><a href="https://discord.gg/xcuYZtmeyZ"><b>Join the Discord</b></a></p>
+
 A new OS for the **Roland D-70** (1990 Super LA synthesizer), built one piece at a time. Today it patches Roland's
 own v1.11 firmware: **Hex girl**, the Rosetta mascot, boots on the 240 x 64 LCD, a BIOS-style **ROSETTA menu**
 opens when you hold [EDIT] at power-on, the four part sliders become **common sliders** (each one moves one
