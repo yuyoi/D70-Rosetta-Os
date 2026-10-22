@@ -24,13 +24,18 @@ import cuts
 import font57
 from sim import Sim
 
-ap = argparse.ArgumentParser(description='Build Rosetta OS for the Roland D-70 from your own v1.11 dump.')
-ap.add_argument('even', help='IC4 (even) dump, 64 KB')
-ap.add_argument('odd', help='IC9 (odd) dump, 64 KB')
-ap.add_argument('--out', default=os.path.join(HERE, '..', 'build'))
-ap.add_argument('--frames', default=os.path.join(HERE, '..', 'frames', 'roland_chan_frames.npz'))
-ARGS = ap.parse_args()
-NPZ, OUT = ARGS.frames, ARGS.out
+ARGS = argparse.Namespace(even=None, odd=None)
+NPZ = OUT = None
+
+
+def configure(even, odd, out=None, frames=None):
+    """set the dumps and folders (the command line at the bottom, or rosetta_patcher.py)"""
+    global NPZ, OUT
+    ARGS.even, ARGS.odd = even, odd
+    OUT = out or os.path.join(HERE, '..', 'build')
+    NPZ = frames or os.path.join(HERE, '..', 'frames', 'roland_chan_frames.npz')
+
+
 MD5_A = '3f9e12e8d73380a5c26c312940f1ff6e'      # v1.11 IC4 (even)
 MD5_B = '640e279056386577499544f826df9253'      # v1.11 IC9 (odd)
 HOOK, HOOK_OLD = 0x130D, bytes([0xB1, 0x00, 0x09])   # LDB INT_PEND,#00
@@ -64,9 +69,9 @@ def main():
     a, b = open(ARGS.even, 'rb').read(), open(ARGS.odd, 'rb').read()
     ma, mb = hashlib.md5(a).hexdigest(), hashlib.md5(b).hexdigest()
     if (ma, mb) == (MD5_B, MD5_A):
-        sys.exit('even and odd are swapped: IC4 = even, IC9 = odd')
+        raise ValueError('even and odd are swapped: IC4 = even, IC9 = odd')
     if (ma, mb) != (MD5_A, MD5_B):
-        sys.exit('not D-70 v1.11 (MD5 %s / %s). Only v1.11 is supported so far.' % (ma, mb))
+        raise ValueError('not D-70 v1.11 (MD5 %s / %s). Only v1.11 is supported so far.' % (ma, mb))
     img = bytearray(128 * 1024); img[0::2] = a; img[1::2] = b
     SCAN_DATA = {0x9C50, 0xB11C, 0xB15C}               # jump table 9C4A, byte table B0F8-B1F7 (checked by hand)
     blanked = cuts.apply(img)                          # ROM PLAY demo out: page 7 0x83A9-0x9C47 free
@@ -606,4 +611,14 @@ def save_tour(tour, path):
 
 
 if __name__ == '__main__':
-    main()
+    ap = argparse.ArgumentParser(description='Build Rosetta OS for the Roland D-70 from your own v1.11 dump.')
+    ap.add_argument('even', help='IC4 (even) dump, 64 KB')
+    ap.add_argument('odd', help='IC9 (odd) dump, 64 KB')
+    ap.add_argument('--out', help='output folder (default: build/)')
+    ap.add_argument('--frames', help='boot frames .npz (default: frames/roland_chan_frames.npz)')
+    a = ap.parse_args()
+    configure(a.even, a.odd, a.out, a.frames)
+    try:
+        main()
+    except ValueError as ex:
+        sys.exit(str(ex))

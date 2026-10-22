@@ -104,6 +104,18 @@ uses the LCD's own font; the previews use a stand-in, and the tone names are mad
 
 ## Quick start
 
+<p align="center"><img src="docs/hexgirl_icon.png" width="96" alt="Rosetta Patcher icon"></p>
+
+**Easiest: Rosetta Patcher (Windows).** Download `RosettaPatcher-D70.exe` from the
+[Releases](https://github.com/yuyoi/D70-Rosetta-Os/releases) page and run it: no Python needed. Or, with Python 3
+(`pip install numpy pillow`), double-click `tools/Rosetta_Patcher.bat` (or run `python tools/rosetta_patcher.py`).
+Pick your IC4 and IC9 dumps (either order: it sorts them out) or one combined 128 KB file, and an output folder.
+It checks that they are v1.11, runs the whole build with every check (a few minutes) and writes the two images to
+burn. Command line: `python -I tools/rosetta_patcher.py --even IC4.bin --odd IC9.bin --out outdir`
+(or `--both combined.bin`).
+
+By hand:
+
 1. **Dump your EPROMs.** IC4 is the even one, IC9 the odd one. With a T48:
    `minipro -p "AM27C512@DIP28" -r dumps/IC4_even.bin` (and IC9). Read each twice and compare.
    The tools expect firmware **v1.11** (IC4 MD5 `3f9e12e8d73380a5c26c312940f1ff6e`,
@@ -119,6 +131,7 @@ uses the LCD's own font; the previews use a stand-in, and the tone names are mad
 
 | File | What |
 |---|---|
+| `tools/rosetta_patcher.py` | Rosetta Patcher: window / command line around the build (also the `.exe` in Releases) |
 | `tools/boot_build.py` | builds Rosetta OS from your dump, runs every check, writes the images and previews |
 | `tools/player.py` | the boot player (80C196) |
 | `tools/menu.py` | the boot menu: pages, keys, drawing, the IC6 dump |
