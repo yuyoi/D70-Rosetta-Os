@@ -1,4 +1,4 @@
-# Frame codec for the D-70 boot player: the HR-GP5 Rosetta codec (codec2), with the frame size as a
+# Frame codec for the D-70 boot player: HR-GP5 codec2 (hr_gp5/tools/codec2.py), with the frame size as a
 # parameter. D-70 graphics = 40 bytes x 64 rows (6 px per byte, T6963C in 6-dot font mode) = 2560 bytes.
 # Stream = frames, then 00.  Frame = hold byte (1-127) + tokens,
 #                             or hold|80 + 2-byte (hi, lo) CPU address of an earlier frame's tokens (replay).
@@ -30,6 +30,13 @@ def _copy_runs(prev, cur, off):
 
 
 OFFS = sorted(set([1, 2, 3, 4, 5, 6] + [W * k + d for k in range(1, 7) for d in (-2, -1, 0, 1, 2)]))
+
+
+def set_size(w, h):
+    """frame = w bytes x h rows (the D-70 boot stores a 108 x 32 px area, the player doubles it)"""
+    global W, H, GB, OFFS
+    W, H, GB = w, h, w * h
+    OFFS = sorted(set([1, 2, 3, 4, 5, 6] + [W * k + d for k in range(1, 7) for d in (-2, -1, 0, 1, 2)]))
 
 
 def encode(prev, cur, delta_only=False):

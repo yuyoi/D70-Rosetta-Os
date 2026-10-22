@@ -3,7 +3,7 @@ fw/mcs96.py and executed from that TEXT, so an encoding mistake in asm.py shows 
 Models: registers, ROM pages (bank reg 0x0100), RAM1, a T6963C (address pointer, auto write, C5 read, display mode,
 status always ready), TIMER1 at 0x0A (+1 per instruction). Records the LCD graphics each time hold_pc is reached."""
 import os, sys, re
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 from mcs96 import decode, SFR
 
 NAME = {v: k for k, v in SFR.items()}
@@ -31,11 +31,13 @@ class LCD:
             self.auto = None
         elif c == 0xC5:
             self.rd = self.ram[self.adp & 0x1FFF]; self.adp += 1
+        elif c in (0xC0, 0xC4):                        # data write, + increment / address unchanged
+            self.ram[self.adp & 0x1FFF] = self.args[-1]
+            if c == 0xC0: self.adp += 1
         elif c & 0xF0 == 0x90:
             self.mode = c
-        elif c & 0xF0 == 0xF0:                         # bit set (F8-FF) / reset (F0-F7) at the address pointer
-            a = self.adp & 0x1FFF; b = 1 << (c & 7)
-            self.ram[a] = (self.ram[a] | b) if c & 8 else (self.ram[a] & ~b)
+        elif c & 0xF0 == 0xF0:                         # bit set / reset: the D-70's T6963C ignores it (hw + MAME)
+            raise RuntimeError('LCD bit set/reset %02X: does nothing on the D-70 panel, use read-modify-write' % c)
         else:
             raise RuntimeError('unexpected LCD cmd %02X' % c)
         self.log.append(c); self.args = []
@@ -132,6 +134,8 @@ class Sim:
                 self.frames.append(bytes(self.lcd.ram[0:2560]))
             if mn in ('DI', 'EI', 'NOP'):
                 pass
+            elif mn in ('SETC', 'CLRC'):
+                self.c = mn == 'SETC'
             elif mn == 'PUSHF':
                 self.push(self.reg[0x08] << 8 | int(self.c)); self.reg[0x08] = 0
             elif mn == 'POPF':
@@ -149,6 +153,7 @@ class Sim:
             elif mn in ('MULU', 'MULUB', 'DIVUB'):
                 if mn == 'MULU' and len(ops) == 2:          # long dst = dst word * src word
                     d = self.regno(ops[0]); r = self.rw(d) * self.opnd(ops[1], True)[0]()
+                    assert d % 4 == 0, 'MULU long result at R%02X: the CPU needs a 4-aligned register' % d
                     self.ww(d, r & 0xFFFF); self.ww(d + 2, r >> 16)
                 elif mn == 'MULUB' and len(ops) == 3:       # word dst = byte * byte
                     d = self.regno(ops[0]); r = self.opnd(ops[1], False)[0]() * self.opnd(ops[2], False)[0]()
@@ -181,6 +186,11 @@ class Sim:
                 if v: nxt = tg
             elif mn == 'BR':
                 nxt = self.rw(self.regno(ops[0].strip('[]')))
+            elif mn == 'NOTB':
+                r = self.regno(ops[0]); v = ~self.reg[r] & 255; self.reg[r] = v; self.z = v == 0
+            elif mn == 'NEGB':
+                r = self.regno(ops[0]); a_ = self.reg[r]; v = -a_ & 255; self.reg[r] = v
+                self.z = v == 0; self.c = a_ == 0
             elif mn in ('INC', 'DEC', 'DECB', 'CLRB', 'SHL', 'INCB', 'CLR', 'SHRB', 'SHR'):
                 g, st = self.opnd(ops[0], w); msk = 0xFFFF if w else 0xFF
                 v = g()

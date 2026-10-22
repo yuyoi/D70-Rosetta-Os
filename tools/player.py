@@ -3,16 +3,19 @@
 Called from the stock boot at 0x130D (LCALL replaces 'LDB INT_PEND,#00', which the player runs at its end).
 At that point the LCD is initialised (page 6 0xB468) and nothing has been drawn yet.
 - stream: file 0x0000-0x0FFF (free FF space), seen at CPU 0x8000 with bank register 0x0100 = 0. Starts 'JSW1'.
-- frame buffer: RAM1 0xE000-0xE9FF. Its old contents are parked in LCD RAM 0x0A00-0x13FF (unused gap between
-  the graphics area 0x0000-0x09FF and the text area 0x1400) and put back at the end; the gap is cleared again.
-- each frame is pushed to LCD graphics 0x0000 with auto-write, then held N x 50 ms on TIMER1 (1.333 us/tick).
+- frames are SW x SH bytes (108 x 32 px, 6 px per byte): decoded into RAM1 0xE000-0xE23F, whose old contents are
+  parked in LCD RAM 0x0A00 (unused at boot) and put back at the end; the gap is cleared again.
+- each frame is drawn 2x (every pixel doubled through an 8-entry table, every row written twice) to LCD graphics
+  at byte column LX (216 x 64 px, centred), then held N x 50 ms on TIMER1 (1.333 us/tick).
 - at the end: graphics cleared, display mode back to 0x90|RA2 (stock's own flags), bank back to R54.
 """
 from asm import Asm
 
-ORG = 0x2100
+ORG = 0x2084                 # free FF runs 0x2083-0x23FF in fixed ROM
 STREAM = 0x8000            # CPU address of the stream (bank 0)
 BUF, GB = 0xE000, 2560
+SW, SH, LX = 18, 32, 2       # small frame: 18 bytes x 32 rows; drawn from LCD byte column 2
+SGB = SW * SH
 GAP = 0x0A00
 TICK = 37500               # 50 ms of TIMER1 at 12 MHz
 LCD_D, LCD_C = 0x0800, 0x0802
@@ -37,8 +40,9 @@ def build():
     for ch in b'JSW1':
         a.ldb_pi(T, PS); a.cmpbi(T, ch); a.jcc('JE', 'm%d' % ch); a.ljmp('out'); a.L('m%d' % ch)
     # park RAM1 buffer in the LCD gap, clear the buffer
-    a.ldi(AD, GAP); a.lcall('setaddr'); a.ldi(P, BUF); a.ldi(L, GB); a.lcall('aw_ram')
-    a.ldi(P, BUF); a.ldi(L, GB); a.clrb(V)
+    a.ldi(AD, GAP); a.lcall('setaddr'); a.ldi(P, BUF); a.ldi(L, SGB); a.lcall('aw_ram')
+    a.ldi(AD, 0); a.lcall('setaddr'); a.ldi(L, GB); a.lcall('aw_zero')          # blank screen around the art
+    a.ldi(P, BUF); a.ldi(L, SGB); a.clrb(V)
     a.L('clr'); a.stb_pi(P, V); a.dec(L); a.jcc('JNE', 'clr')
     a.ldbi(X, 0x98); a.lcall('cmd')             # graphics on, text off
     # ---- frame loop
@@ -47,7 +51,7 @@ def build():
     a.ldb_pi(A + 1, PS); a.ldb_pi(A, PS)         # replay address, hi then lo
     a.ld(SV, PS); a.ld(PS, A); a.lcall('decode'); a.ld(PS, SV); a.andbi(HD, 0x7F); a.sjmp('show')
     a.L('norm'); a.lcall('decode')
-    a.L('show'); a.ldi(AD, 0); a.lcall('setaddr'); a.ldi(P, BUF); a.ldi(L, GB); a.lcall('aw_ram')
+    a.L('show'); a.lcall('big')
     a.L('hold'); a.ld(TM, TIMER1)
     a.L('wl'); a.ld(TD, TIMER1); a.sub(TD, TM); a.cmpi(TD, TICK); a.jcc('JNC', 'wl')
     a.addi(TM, TICK); a.decb(HD); a.jcc('JNE', 'wl')
@@ -57,8 +61,8 @@ def build():
     a.ldb_abs(T, KEY_EDIT); a.jbc(T, 7, 'nomenu'); a.lcall(MENU)   # [EDIT] held at power-on: ROSETTA menu
     a.L('nomenu')
     a.ldi(AD, 0); a.lcall('setaddr'); a.ldi(L, GB); a.lcall('aw_zero')
-    a.ldi(AD, GAP); a.lcall('setaddr'); a.ldi(P, BUF); a.ldi(L, GB); a.lcall('rd_ram')
-    a.ldi(AD, GAP); a.lcall('setaddr'); a.ldi(L, GB); a.lcall('aw_zero')
+    a.ldi(AD, GAP); a.lcall('setaddr'); a.ldi(P, BUF); a.ldi(L, SGB); a.lcall('rd_ram')
+    a.ldi(AD, GAP); a.lcall('setaddr'); a.ldi(L, SGB); a.lcall('aw_zero')
     a.ldb(X, RA2); a.orbi(X, 0x90); a.lcall('cmd')
     a.L('out')
     a.ldb_abs(T, KEY_EXIT); a.jbs(T, 7, 'stock')      # [EXIT] held at power-on: plain D-70, no menu
@@ -72,7 +76,7 @@ def build():
 
     # ---- decode one frame from [PS]+ into BUF (codec_d70 tokens)
     a.L('decode'); a.ldi(P, BUF)
-    a.L('dl'); a.cmpi(P, BUF + GB); a.jcc('JNC', 'dl1'); a.ret(); a.L('dl1')
+    a.L('dl'); a.cmpi(P, BUF + SGB); a.jcc('JNC', 'dl1'); a.ret(); a.L('dl1')
     a.ldb_pi(T, PS)
     a.cmpbi(T, 0xC0); a.jcc('JC', 't_c0')
     a.cmpbi(T, 0x80); a.jcc('JC', 't_80')
@@ -92,8 +96,18 @@ def build():
     a.L('t_80'); a.andbi(T, 0x3F); a.ldbze(L, T); a.inc(L); a.scall('chk')
     a.L('x8'); a.ldb_pi(V, PS); a.xorb_ind(V, P); a.stb_pi(P, V); a.dec(L); a.jcc('JNE', 'x8'); a.sjmp('dl')
     # bounds check: P + L must stay inside the buffer, else stop the whole animation
-    a.L('chk'); a.add3(TD, P, L); a.cmpi(TD, BUF + GB); a.jcc('JH', 'bad'); a.ret()
+    a.L('chk'); a.add3(TD, P, L); a.cmpi(TD, BUF + SGB); a.jcc('JH', 'bad'); a.ret()
     a.L('bad'); a.pop(TD); a.pop(TD); a.ljmp('done')       # drop chk + decode return addresses
+
+    # ---- draw BUF 2x: each 6-px byte -> two LCD bytes (left 3 px, right 3 px doubled), each row twice
+    a.L('big'); a.ldi(P, BUF); a.ldi(AD, LX); a.ldbi(V, SH)
+    a.L('br'); a.ld(Q, P); a.lcall('brow'); a.ld(P, Q); a.lcall('brow'); a.decb(V); a.jcc('JNE', 'br'); a.ret()
+    a.L('brow'); a.lcall('setaddr'); a.ldbi(X, 0xB0); a.scall('cmd'); a.ldbi(L, SW)
+    a.L('b1'); a.ldb_pi(T, P); a.ldbze(TD, T); a.shr(TD, 3); a.ldb_lidx_l(X, TD, 'dtab'); a.scall('awx')
+    a.ldbze(TD, T); a.andbi(TD, 7); a.ldb_lidx_l(X, TD, 'dtab'); a.scall('awx')
+    a.decb(L); a.jcc('JNE', 'b1'); a.ldbi(X, 0xB2); a.scall('cmd'); a.addi(AD, 40); a.ret()
+    a.L('awx'); a.ldb_abs(ST, LCD_C); a.jbc(ST, 3, 'awx'); a.stb_abs(LCD_D, X); a.ret()
+    a.L('dtab'); a.data([(v >> 2 & 1) * 0x30 | (v >> 1 & 1) * 0x0C | (v & 1) * 0x03 for v in range(8)])
 
     # ---- for the menu (which runs in ROM page 0): copy CNT bytes of IC6 bank R4A from [R36] to RAM [R34]
     a.L('ic6_copy'); a.stb_abs(BANK, AD)

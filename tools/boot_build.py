@@ -5,9 +5,10 @@
 IC4 = the EVEN EPROM, IC9 = the ODD EPROM (27C512, 64 KB each). Writes to build/: the two 27C512 images to burn,
 the combined 128 KB image, a boot preview GIF, menu tour PNGs (boot menu + SYNTH menu) and the player listing.
 Every build is checked in sim.py: the real player bytes run against an LCD model and every frame is compared,
-both menus are driven through key tours, the IC6 dump is decoded back, and the slider hook is exercised.
+the menus are driven through key tours, the ARP and the stock-screen cut are exercised, the IC6 dump is decoded
+back, and page 4's code is scanned for references into the cut screens.
 """
-import os, sys, hashlib, argparse
+import os, re, sys, hashlib, argparse
 import numpy as np
 from PIL import Image
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -17,6 +18,7 @@ import player as PL
 import menu as MN
 import sliders as SL
 import synth as SY
+import arp as AR
 from asm import Asm
 import cuts
 import font57
@@ -37,11 +39,11 @@ CODE_END = 0x2400                              # free FF runs 0x2083-0x23FF
 UI_HOOK, UI_OLD = 0x151D, bytes([0xEF, 0xDF, 0x1E])   # LCALL 33FF (stock UI step)
 
 
-def pack(px):
-    """bool[64][240] -> 2560 bytes, 6 px per byte, bit 5 = leftmost (T6963C 6-dot mode)"""
+def pack(px, width=240):
+    """bool[rows][width] -> bytes, 6 px per byte, bit 5 = leftmost (T6963C 6-dot mode)"""
     out = bytearray()
     for row in px:
-        for c in range(0, 240, 6):
+        for c in range(0, width, 6):
             v = 0
             for k in range(6):
                 v = v << 1 | int(row[c + k])
@@ -66,18 +68,34 @@ def main():
     if (ma, mb) != (MD5_A, MD5_B):
         sys.exit('not D-70 v1.11 (MD5 %s / %s). Only v1.11 is supported so far.' % (ma, mb))
     img = bytearray(128 * 1024); img[0::2] = a; img[1::2] = b
-    cuts.apply(img)                                    # ROM PLAY demo out: page 7 0x83A9-0x9C47 free
+    SCAN_DATA = {0x9C50, 0xB11C, 0xB15C}               # jump table 9C4A, byte table B0F8-B1F7 (checked by hand)
+    blanked = cuts.apply(img)                          # ROM PLAY demo out: page 7 0x83A9-0x9C47 free
+    from mcs96 import decode                           # nothing in page 4's code may point into a blanked screen
+    pc = 0x9C34; hits = []
+    while pc < 0xBE54:
+        t, ln, kind, tg = decode(img, 4 * 0x4000 + pc - 0x8000, pc)
+        for v in re.findall(r'#([0-9A-F]{4})\b|\b([0-9A-F]{4})\[', t):   # data refs (relative jumps: table noise)
+            v = v[0] or v[1]
+            if any(a <= int(v, 16) <= b for a, b in blanked) and pc not in SCAN_DATA:
+                hits.append('%04X %s' % (pc, t))
+        pc += max(ln, 1)
+    assert not hits, 'page 4 code points into a cut screen: ' + ' | '.join(hits)
+    print('screens cut: %d B of page 4 descriptors (%s)' % (sum(b - a + 1 for a, b in blanked),
+          ' '.join('%04X-%04X' % r for r in blanked)))
 
     z = np.load(NPZ)
     scr, ticks = z['screens'].astype(bool), [int(t) for t in z['ticks']]
-    h, w = scr.shape[1:]
-    x0, y0 = ((240 - w) // 2) // 6 * 6, (64 - h) // 2
-    frames = []
-    for s in scr:
-        f = np.zeros((64, 240), bool); f[y0:y0 + h, x0:x0 + w] = s
+    xs = np.where(scr.any(axis=0).any(axis=0))[0]          # the art's columns, 108 px wide (= 18 bytes)
+    sx = min(max(int(xs.min()), 0), scr.shape[2] - PL.SW * 6)
+    small = scr[:, :PL.SH, sx:sx + PL.SW * 6]
+    assert not scr[:, :, :sx].any() and not scr[:, :, sx + PL.SW * 6:].any(), 'art wider than 108 px'
+    frames = []                                            # what the LCD must show: the art doubled, centred
+    for s in small:
+        f = np.zeros((64, 240), bool); f[:, PL.LX * 6:PL.LX * 6 + PL.SW * 12] = s.repeat(2, 0).repeat(2, 1)
         frames.append(pack(f))
-
-    stream = b'JSW1' + C.build_stream(frames, ticks, PL.STREAM + 4)
+    C.set_size(PL.SW, PL.SH)
+    sframes = [pack(sf, PL.SW * 6) for sf in small]      # 18 bytes x 32 rows each
+    stream = b'JSW1' + C.build_stream(sframes, ticks, PL.STREAM + 4)
     assert len(stream) <= STREAM_MAX, 'stream %d bytes, room %d' % (len(stream), STREAM_MAX)
     assert set(img[STREAM_FILE:STREAM_FILE + len(stream)]) == {0xFF}
     img[STREAM_FILE:STREAM_FILE + len(stream)] = stream
@@ -111,32 +129,52 @@ def main():
     assert masm.labels['menu_entry'] == PL.MENU
 
     # page 7 (the freed demo space): common sliders + the SYNTH menu; fixed ROM keeps two 7-byte trampolines
-    SY.IC6_RD = end + 14                                 # fixed helper after the two trampolines
-    p7 = Asm(SY.ORG); SL.emit(p7); SY.emit(p7); p7code = p7.assemble()
+    TRAMP = 0x18CB                                       # freed Extend Product Mode code (cuts.py)
+    SY.IC6_RD = TRAMP + 21                               # fixed helper after the three trampolines
+    dsegs, dlabels = SY.build_data()                    # SYNTH tables + strings -> the freed page-7 blocks
+    for org, blob in dsegs:
+        f = 7 * 0x4000 + org - 0x8000
+        assert set(img[f:f + len(blob)]) == {0xFF}, 'data block %04X not free' % org
+        img[f:f + len(blob)] = blob
+    fx = Asm(AR.TICK_ORG); fx.ext = {}; AR.emit_tick(fx); fxcode = fx.assemble()   # ARP clock: freed fixed ROM
+    assert AR.TICK_ORG + len(fxcode) <= AR.TICK_END + 1, 'ARP clock does not fit (%d B)' % len(fxcode)
+    assert set(img[AR.TICK_ORG:AR.TICK_ORG + len(fxcode)]) == {0xFF}
+    img[AR.TICK_ORG:AR.TICK_ORG + len(fxcode)] = fxcode
+    p4 = Asm(AR.IN_ORG); p4.ext = {}; AR.emit_in(p4); p4code = p4.assemble()     # ARP key in: page 4 free tail
+    f4 = 4 * 0x4000 + AR.IN_ORG - 0x8000
+    assert AR.IN_ORG + len(p4code) <= AR.IN_END + 1, 'ARP key in does not fit (%d B)' % len(p4code)
+    assert set(img[f4:f4 + len(p4code)]) == {0xFF}
+    img[f4:f4 + len(p4code)] = p4code
+    p7 = Asm(SY.ORG); p7.ext = dict(dlabels, **fx.labels); SL.emit(p7); SY.emit(p7)
+    p7code = p7.assemble(); p7.labels.update(fx.labels); p7.labels.update(p4.labels)
     f7 = 7 * 0x4000 + SY.ORG - 0x8000
     assert SY.ORG + len(p7code) <= SY.END + 1, 'page 7 code does not fit (%d B)' % len(p7code)
     assert set(img[f7:f7 + len(p7code)]) == {0xFF}
     img[f7:f7 + len(p7code)] = p7code
     tramps = {}
-    t = end
-    for name in ('sl_hook', 'rt_ui'):                    # LD R1A,#target ; LJMP 105F (page 7 far call)
+    t = TRAMP
+    for name, stub in (('sl_hook', 0x105F), ('rt_ui', 0x105F), ('arp_in', 0x1056)):   # LD R1A,#target ; LJMP stub
         tramps[name] = t
         assert set(img[t:t + 7]) == {0xFF}
-        v = p7.labels[name]; d = (0x105F - (t + 7)) & 0xFFFF
+        v = p7.labels[name]; d = (stub - (t + 7)) & 0xFFFF
         img[t:t + 7] = bytes([0xA1, v & 255, v >> 8, 0x1A, 0xE7, d & 255, d >> 8]); t += 7
     assert t == SY.IC6_RD and set(img[t:t + 16]) == {0xFF}
     # IC6 byte read for page-7 code: DI ; STB 0100,R1C ; LDB R26,[R20] ; STB 0100,R54 ; EI ; RET
     img[t:t + 16] = bytes([0xFA, 0xC7, 0x01, 0x00, 0x01, 0x1C, 0xB2, 0x20, 0x26, 0xC7, 0x01, 0x00, 0x01, 0x54,
                            0xFB, 0xF0]); t += 16
     send = t
-    assert send <= CODE_END, 'trampolines do not fit'
+    assert send <= 0x1991 + 1, 'trampolines do not fit'
     assert bytes(img[SL.HOOK:SL.HOOK + len(SL.HOOK_OLD)]) == SL.HOOK_OLD
     d = (tramps['sl_hook'] - (SL.HOOK + 3)) & 0xFFFF
     img[SL.HOOK:SL.HOOK + 3] = bytes([0xE7, d & 255, d >> 8])
     assert bytes(img[UI_HOOK:UI_HOOK + 3]) == UI_OLD
     d = (tramps['rt_ui'] - (UI_HOOK + 3)) & 0xFFFF
     img[UI_HOOK:UI_HOOK + 3] = bytes([0xEF, d & 255, d >> 8])
+    assert bytes(img[AR.PUMP_HOOK:AR.PUMP_HOOK + 3]) == AR.PUMP_OLD   # keyboard events -> arp_in
+    d = (tramps['arp_in'] - (AR.PUMP_HOOK + 3)) & 0xFFFF
+    img[AR.PUMP_HOOK:AR.PUMP_HOOK + 3] = bytes([0xE7, d & 255, d >> 8])
     slider_check(bytes(img), p7)
+    arp_check(bytes(img), p7)
     synth_shots = synth_check(bytes(img), p7, tramps['rt_ui'])
 
     assert bytes(img[HOOK:HOOK + 3]) == HOOK_OLD
@@ -166,9 +204,9 @@ def main():
     assert dump_check(bytes(img), masm), 'IC6 dump does not match'
 
     os.makedirs(OUT, exist_ok=True)
-    save_tour(tour, os.path.join(OUT, 'D70_rosetta_v05_menu_tour.png'))
-    save_tour(synth_shots, os.path.join(OUT, 'D70_rosetta_v05_synth_tour.png'))
-    name = 'D70_rosetta_v05'
+    save_tour(tour, os.path.join(OUT, 'D70_rosetta_v06_menu_tour.png'))
+    save_tour(synth_shots, os.path.join(OUT, 'D70_rosetta_v06_synth_tour.png'))
+    name = 'D70_rosetta_v06'
     ev, od = bytes(img[0::2]), bytes(img[1::2])
     for suf, data in (('IC4_even', ev), ('IC9_odd', od), ('combined', bytes(img))):
         open(os.path.join(OUT, '%s_%s.bin' % (name, suf)), 'wb').write(data)
@@ -177,9 +215,10 @@ def main():
            for f in sim.frames]
     ims[0].save(os.path.join(OUT, name + '_preview.gif'), save_all=True, append_images=ims[1:],
                 duration=[t * 50 for t in ticks], loop=0)
-    print('cuts: ROM PLAY demo removed, %d B free on page 7 (CPU 0x83A9-0x9C47)' % cuts.free_bytes())
-    print('trampolines %04X-%04X, fixed ROM left %d B | page 7 %04X-%04X (%d B, left %d B)' % (end, send - 1,
-          CODE_END - send, SY.ORG, SY.ORG + len(p7code) - 1, len(p7code), SY.END + 1 - SY.ORG - len(p7code)))
+    print('cuts: page 7 %d B freed, fixed ROM %d B freed (free blocks: page 7 0xAD4E-0xB289, 0xBA0A-0xBCA6)' % (cuts.free_bytes(7), cuts.free_bytes(None)))
+    print('player %04X-%04X, trampolines %04X-%04X | page 7 %04X-%04X (%d B, left %d B)' % (PL.ORG, end - 1, TRAMP, send - 1, SY.ORG, SY.ORG + len(p7code) - 1, len(p7code), SY.END + 1 - SY.ORG - len(p7code)))
+    print('SYNTH data: ' + ', '.join('%04X+%d' % (org, len(b)) for org, b in dsegs) + ' (blocks: ' +
+          ', '.join('%04X-%04X' % sg for sg in SY.DATA_SEGS) + ')')
     print('menu code %04X-%04X (%d B, room to %04X) | data %d B (%d + %d) | tour %d screens' % (
           MN.ORG, MN.ORG + len(mcode) - 1, len(mcode), 0x8000 + STREAM_MAX - 1, len(dblob), split[0], split[1], len(tour)))
     print('frames %d, %.1f s | stream %d B (room %d) | player %04X-%04X (%d B) | sim %d steps' % (
@@ -264,6 +303,56 @@ def slider_check(img, sasm):
         assert sim.bank == 0x02, 'bank not restored'
 
 
+def arp_check(img, p7):
+    """keys in through the 0x1092 hook, notes out through page 4 0xB49F: pass-through when off, UP over 2 octaves,
+    gate, UP-DOWN, release"""
+    sim = Sim(img, ram_fill=0)
+    keys, out = [], []
+    def key_event(sm):
+        if keys: n, v = keys.pop(0); sm.reg[0x1C] = n; sm.reg[0x1D] = v; sm.c = True
+        else: sm.c = False
+        return True
+    def queue(sm):
+        assert sm.bank == 4, 'queue called without page 4'
+        out.append((sm.reg[0x1E], sm.reg[0x1C], sm.reg[0x1D])); return True
+    sim.hooks[AR.KEY_EVENT] = key_event; sim.hooks[0xB49F] = queue
+    def press(n, v):                                   # one pump call, as page 4 0xB484 makes it
+        keys.append((n, v)); sim.reg[0x1E] = 0x10; sim.reg[0x54] = 4; sim.bank = 4; sim.reg[0x1A] = 0x92; sim.reg[0x1B] = 0x10
+        for k in range(0x20, 0x30): sim.reg[k] = k ^ 0x5A
+        sim.run(0x1050); assert sim.bank == 4 and sim.reg[0x1E] == 0x10, 'pump context not restored'
+        assert all(sim.reg[k] == k ^ 0x5A for k in range(0x20, 0x30)), 'arp_in changed R20-R2F (the pump caller keeps values there)'
+        return sim.c, sim.reg[0x1C], sim.reg[0x1D]
+    def tick(n=1, dt=20 * 256):
+        for _ in range(n):
+            sim.t1 = (sim.t1 + dt) & 0xFFFF; sim.reg[0x54] = 7; sim.bank = 7; sim.run(p7.labels['arp_tick'])
+    r = lambda a: sim.ram[a - 0xC000]
+    DN = 0x80                                          # velocity bit 7 set = key down (page 6 0x82B0)
+    assert press(60, DN | 100) == (True, 60, DN | 100), 'ARP off must pass keys through'
+    assert press(60, 0x30) == (True, 60, 0x30)
+    tick(); assert r(AR.A_BPM) == 120
+    sim.ram[AR.A_ON - 0xC000] = 1; sim.ram[AR.A_OCT - 0xC000] = 1
+    for n, v in ((67, 90), (60, 100), (64, 80)): assert press(n, DN | v)[0] is False, 'ARP on must swallow keys'
+    assert [r(AR.A_LIST + k) for k in range(r(AR.A_N))] == [60, 64, 67]
+    tick(130)
+    ons = [n for t_, n, v in out if v & DN]
+    assert ons[:7] == [60, 64, 67, 72, 76, 79, 60], ons
+    assert all(t_ == 0x10 for t_, n, v in out)
+    st = []                                            # every note goes off before the next one starts
+    for t_, n, v in out:
+        if v & DN: assert not st, out; st.append(n)
+        else: assert st == [n], out; st.pop()
+    assert ons and out[0][2] == DN | 80                # velocity of the last key
+    out.clear(); sim.ram[AR.A_MODE - 0xC000] = 2; sim.ram[AR.A_IDX - 0xC000] = 0xFF
+    tick(240); ons = [n for t_, n, v in out if v & DN]
+    assert ons[:12] == [60, 64, 67, 72, 76, 79, 76, 72, 67, 64, 60, 64], ons
+    for n in (60, 64, 67): assert press(n, 0x30)[0] is False, 'ARP on must swallow key ups'
+    tick(40); assert r(AR.A_N) == 0 and r(AR.A_PLAY) == 0 and not out[-1][2] & DN, (r(AR.A_N), r(AR.A_PLAY), r(AR.A_KEYS), out[-3:], [r(AR.A_LIST + k) for k in range(4)])
+    out.clear(); sim.ram[AR.A_MODE - 0xC000] = 0; sim.ram[AR.A_OCT - 0xC000] = 3   # 4 octaves up from the top
+    press(98, DN | 64); tick(200); press(98, 0x30); tick(40)
+    ons = [n for t_, n, v in out if v & DN]
+    assert ons and max(ons) <= AR.NOTE_TOP and min(ons) >= 28, ons
+
+
 def synth_check(img, p7, ui):
     """drive the SYNTH menu through main-loop passes with the stock key reader / parameter read-write stubbed:
     open with [USER], visit pages, edit values, close; check every write and the stock hand-back"""
@@ -274,6 +363,7 @@ def synth_check(img, p7, ui):
         t = [0] * 0x3E; t[0:10] = nm.encode('ascii'); t[0x0B] = 10 + sec * 7; t[0x10] = 24; t[0x11] = 32
         t[0x19] = 80 - sec * 10; t[0x1A] = 10 + sec * 5; t[0x1D] = 40; t[0x29] = 100
         t[0x2F:0x36] = [10 + sec, 100, 30, 80, 60, 70, 40 + sec * 5]; t[0x22:0x29] = [5, 90, 30, 70, 50, 60, 30]
+        t[0x0A] = 0x40
         for k in range(0x3E): mem[0x0351 + sec * 0x3E + k] = t[k]
     pb = 0x019E
     mem[pb + 0x0D] = 1; mem[pb + 0x0E] = 60
@@ -284,11 +374,15 @@ def synth_check(img, p7, ui):
     sim = Sim(img, ram_fill=0, tick=8)              # the stock boot clears work RAM
     sim.reg[0x54] = 0x02; sim.reg[0x5F] = 0
     writes, applies, calls = [], [], []
-    keyq = []
+    keyq, dialq = [], []
     def p4(sm):
         if sm.rw(0x1A) == SY.GETKEY:
             if keyq: sm.reg[0x1C] = keyq.pop(0); sm.c = True
             else: sm.c = False
+        elif sm.rw(0x1A) == SY.DIAL:
+            sm.reg[0x1C] = dialq.pop(0) & 255 if dialq else 0
+        else:
+            raise AssertionError('page 4 entry %04X' % sm.rw(0x1A))
         return True
     def p5(sm):
         ad = sm.rw(0xD4) | sm.rw(0xD6) << 16
@@ -299,13 +393,43 @@ def synth_check(img, p7, ui):
         assert sm.bank == 2, 'apply called without page 2'
         applies.append(len(writes)); return True
     sim.hooks[SY.P4] = p4; sim.hooks[SY.P5] = p5; sim.hooks[SY.APPLY] = apply   # the real page-2 stub runs
+    wreads = []                                        # DLM view: wave ROM stand-ins
+    def wsel(sm): sm.reg[0x1C] = 3; sm.c = False; return True
+    def wdir(sm):
+        for k, v in enumerate([40, 52, 64, 76, 88] + [0xFF] * 6): sm.ram[SY.WENT + 0x10 + k - 0xC000] = v
+        for k in range(12): sm.ram[SY.WENT + 0x1B + k - 0xC000] = k
+        return True
+    def wsmp(sm):
+        e = bytes([0x45, 0x23, 0x01 | 0x08, 0xFF, 0x0F, 0, 4, 0x40, 60, 0x40])   # start 0x12345 (+card bit)
+        for k, v in enumerate(e): sm.wb(sm.rw(0x2A) + k, v)
+        wreads.append(('smp', sm.reg[0x1C], sm.reg[0x1D])); return True
+    def wbyte(sm):
+        assert sm.bank == 3 and sm.reg[0x23] == 3, 'wave read: page 3 / select'
+        ad = sm.rw(0x20) | (sm.reg[0x22] & 7) << 16
+        wreads.append(ad); sm.reg[0x1C] = (0x08 if (ad >> 4) & 1 else 0xF8)
+        ad += 1; sm.ww(0x20, ad & 0xFFFF); sm.reg[0x22] = (sm.reg[0x22] & 0xF8) | (ad >> 16 & 7); return True
+    sim.hooks[SY.WSEL] = wsel; sim.hooks[SY.WDIR] = wdir; sim.hooks[SY.WSMP] = wsmp; sim.hooks[SY.WBYTE] = wbyte
+    fixes, fx = [], []
+    def tone_fix(sm):
+        assert sm.bank == 2, 'tone refresh called without page 2'
+        fixes.append(sm.reg[0x1D]); return True
+    def fx_reload(sm):
+        assert sm.bank == 3, 'effects reload called without page 3'
+        fx.append(len(writes)); return True
+    sim.hooks[SY.TONE_FIX] = tone_fix; sim.hooks[0xB165] = fx_reload
     def stockfn(n):
         def f(sm):
             assert sm.bank == 2, n + ' called without ROM page 2 in the window'
             calls.append(n); return True
         return f
-    for fn, nm in ((SY.STOCK_UI, 'ui'), (SY.SCR_INIT, 'init'), (SY.SCR_DRAW, 'scr'), (SY.SCR_LEDS, 'leds')):
+    for fn, nm in ((SY.STOCK_UI, 'ui'), (SY.SCR_INIT, 'init'), (SY.SCR_DRAW, 'scr'), (SY.SCR_LEDS, 'leds'),
+                   (SY.SCR_OFF, 'off'), (SY.SCR_ENTER, 'enter')):
         sim.hooks[fn] = stockfn(nm)
+    sls = []
+    def sl_loop(sm):
+        assert sm.bank == 2, 'slider loop called without page 2'
+        sls.append(sm.ram[SY.SLD_LAST - 0xC000]); return True
+    sim.hooks[SY.SL_LOOP] = sl_loop
     shots = []
     def step(key=None, user=False, shot=True):
         sim.ram[SY.KEYMAP_USER[0] - 0xC000] = SY.KEYMAP_USER[1] if user else 0
@@ -326,31 +450,72 @@ def synth_check(img, p7, ui):
     assert sim.lcd.homes.get(0x40) == SY.LCD_TEXT and sim.lcd.homes.get(0x42) == SY.LCD_GFX
     step(SY.K_ENT)                                                     # ROSETTA OS > SYNTH
     step(SY.K_DN); step(SY.K_ENT)                                      # WAVE / ZONE
-    step(SY.K_DN); step(SY.K_DN); step(SY.K_INC)                       # NUMBER + 1
-    assert writes[-1] == (0x0351 + 0x0B, mem[0x0351 + 0x0B]) and applies[-1] == len(writes)
-    step(SY.K_RT); step(SY.K_DEC)                                      # ZONE column keeps the row: SHIFT - 1
+    m0, n0_ = mem[0x0351 + 0x0A], mem[0x0351 + 0x0B]
+    step(SY.K_DN); step(SY.K_INC)                                      # WAVE: next wave, tone record rebuilt
+    assert writes[-2:] == [(0x0351 + 0x0A, m0), (0x0351 + 0x0B, n0_ + 1)] and fixes[-1] == 0, (writes[-2:], fixes)
+    assert applies[-1] == len(writes)
+    mem[0x0351 + 0x0A] = 0x40; mem[0x0351 + 0x0B] = 46; step(SY.K_INC)  # last wave of I1 -> I2 1
+    assert writes[-2:] == [(0x0351 + 0x0A, 0x41), (0x0351 + 0x0B, 0)], writes[-2:]
+    step(SY.K_DEC)                                                     # and back to I1 47
+    assert writes[-2:] == [(0x0351 + 0x0A, 0x40), (0x0351 + 0x0B, 46)], writes[-2:]
+    step(SY.K_RT); step(SY.K_DN); step(SY.K_DEC)                       # ZONE column: SHIFT - 1
     assert writes[-1] == (0x019E + 0x23 + 0x02, 23), (writes[-3:], [hex(sim.ram[k - 0xC000]) for k in (SY.PG, SY.SEL, SY.COL, SY.SEC)])
     step(SY.K_F5); step(SY.K_F5); step(SY.K_F5); step(SY.K_F5)         # sections L2 U3 U4 ALL
     n0 = len(writes); step(SY.K_INC)                                   # ALL: one INC writes four sections
     assert [w[0] for w in writes[n0:]] == [0x019E + 0x23 + k * 0x0D + 0x02 for k in range(4)]
     step(SY.K_EXIT)
-    for _ in range(4): step(SY.K_DN, shot=False)                       # WAVE -> down to AMP ENV
+    for _ in range(5): step(SY.K_DN, shot=False)                       # WAVE -> down to AMP ENV
     step(SY.K_DN); step(SY.K_ENT); step(SY.K_DN); step(SY.K_INC)       # AMP ENV, A LEVEL + 1
     step(SY.K_EXIT); step(SY.K_UP); step(SY.K_ENT)                     # AMP
     step(SY.K_EXIT); step(SY.K_UP); step(SY.K_UP); step(SY.K_ENT)      # FILTER
     step(SY.K_EXIT); step(SY.K_UP); step(SY.K_ENT)                     # PITCH
+    def view_check():                                  # the DLM view read exactly the loop slice
+        sec = 0; t0 = 0x0351 + sec * 0x3E
+        mode, start, ln, num = mem.get(t0 + 0x0D, 0), mem.get(t0 + 0x0E, 0), mem.get(t0 + 0x0F, 0), mem.get(t0 + 0x0B, 0)
+        n = (ln + 1) * 4; base = (0x1000 + num * 0x50 + start) * 4 if mode == 0 else (0x12345 & ~3) + start * 4
+        rd = [x for x in wreads if not isinstance(x, tuple)]
+        k = (n + 118) // 119
+        assert len(rd) == 119 * k, (len(rd), k)
+        assert rd[:min(n, len(rd))] == [base + i for i in range(min(n, len(rd)))], (hex(base), [hex(x) for x in rd[:4]])
+        if mode: assert ('smp', 3, 2) in wreads           # the sample under middle C (zone 2)
+        wreads.clear()
+    step(SY.K_EXIT); step(SY.K_UP); wreads.clear(); step(SY.K_ENT); view_check()   # DLM, its view
+    mem[0x0351 + 0x0D] = 1; mem[0x0351 + 0x0E] = 5; mem[0x0351 + 0x0F] = 9; step(SY.K_UP); view_check()   # MODE B
+    step(SY.K_DN); step(SY.K_DN); n0 = len(writes); step(SY.K_INC)     # START + 1 (section ALL: four layers)
+    assert [w[0] for w in writes[n0:]] == [0x0351 + k * 0x3E + 0x0E for k in range(4)], writes[n0:]
+    s0 = writes[-1][1]
+    n0 = len(writes); dialq.append(3); step(shot=False)               # Alpha Dial: 3 clicks = START + 3, once
+    assert writes[n0:] == [(0x0351 + k * 0x3E + 0x0E, s0 + 3) for k in range(4)], writes[n0:]
+    n0 = len(writes); dialq.append(-2); step(shot=False)              # 2 clicks back
+    assert [w[1] for w in writes[n0:]] == [s0 + 1] * 4, writes[n0:]
+    n0 = len(writes); sim.ram[SY.SLD - 0xC000] = 127; step(shot=False)  # slider 1 to the top: START = 127
+    assert [w[1] for w in writes[n0:]] == [127] * 4 and sls[-1] == 127, (writes[n0:], sls[-3:])
+    n0 = len(writes); sim.ram[SY.SLD - 0xC000] = 64; step(shot=False)   # half way: 64
+    assert [w[1] for w in writes[n0:]] == [64] * 4, writes[n0:]
+    n0 = len(writes); step(shot=False); assert writes[n0:] == []       # not moved: nothing
+    step(SY.K_UP); n0 = len(writes); sim.ram[SY.SLD - 0xC000] = 0; step(shot=False)     # MODE (B -> A)
+    assert [w[1] for w in writes[n0:]] == [0] * 4, writes[n0:]
+    n0 = len(writes); sim.ram[SY.SLD - 0xC000] = 127; step(shot=False)  # and back to B
+    assert [w[1] for w in writes[n0:]] == [1] * 4, writes[n0:]
+    step(SY.K_DN)
     step(SY.K_EXIT)
-    for _ in range(5): step(SY.K_UP, shot=False)
+    for _ in range(4): step(SY.K_DN, shot=False)                       # DLM -> EFFECTS: 4 keys ...
+    dialq.append(3); step(shot=False)                                  # ... + 3 dial clicks
+    step(SY.K_ENT); step(SY.K_RT); step(SY.K_DN); step(SY.K_INC)       # chorus LEVEL + 1
+    assert writes[-1] == (0x00AD + 0xB3, 1) and fx and fx[-1] == len(writes), (writes[-4:], fx)
+    step(SY.K_EXIT)
+    for _ in range(9): step(SY.K_UP, shot=False)
     step(SY.K_UP); step(SY.K_ENT); step(SY.K_DN); step(SY.K_INC)       # LAYERS, L2 level + 1
     assert writes[-1] == (0x019E + 0x23 + 1 * 0x0D + 0x01, 73)
     step(SY.K_EXIT); step(SY.K_EXIT)                                   # back to SYNTH, ROSETTA OS
-    step(SY.K_DN); step(SY.K_DN); step(SY.K_ENT)                       # ABOUT
-    step(SY.K_EXIT); step(SY.K_UP); step(SY.K_ENT)                     # TOOLS
+    step(SY.K_DN); step(SY.K_DN); step(SY.K_ENT); step(SY.K_EXIT)      # SETTINGS
+    step(SY.K_DN); step(SY.K_ENT)                                      # ABOUT
+    step(SY.K_EXIT); step(SY.K_UP); step(SY.K_UP); step(SY.K_ENT)      # TOOLS
     sim.reg[0x9C] = 0x00; sim.reg[0x9D] = 0x14; sim.reg[0xA0] = 0; sim.reg[0xA1] = 0; sim.reg[0xA2] = 0x0C
     sim.tx.clear(); step(SY.K_ENT, shot=False)                           # DUMP IC6
     from ic6_decode import decode
     dimg, nblk = decode(bytes(sim.tx)); assert nblk == 256 and dimg == sim.ic6, 'runtime IC6 dump mismatch'
-    step(SY.K_EXIT); step(SY.K_DN); step(SY.K_DN); n = len(calls); step(SY.K_ENT)   # EXIT TO D-70
+    step(SY.K_EXIT); step(SY.K_DN); step(SY.K_DN); step(SY.K_DN); n = len(calls); step(SY.K_ENT)   # EXIT TO D-70
     assert sim.ram[SY.M_ON - 0xC000] == 0 and calls[n:] == []
     assert sim.lcd.homes[0x40] == 0x1400 and sim.lcd.homes[0x42] == 0 and sim.lcd.mode == 0x9C
     step(shot=False); assert calls[-1] == 'ui'
@@ -359,6 +524,33 @@ def synth_check(img, p7, ui):
     sim.ram[SY.BOOTN - 0xC000] = 23; sim.ram[SY.BOOTHI - 0xC000] = 0xFF; sim.t1 = 0; step()     # last wrap
     assert sim.ram[SY.M_ON - 0xC000] == 1 and sim.lcd.homes[0x40] == SY.LCD_TEXT
     assert sim.bank == 0x02
+    sim.ram[SY.SEC - 0xC000] = 0
+    step(SY.K_MIDB); assert sim.ram[SY.PG - 0xC000] == SY.PIDX['midi']        # MIDI OUT key: our page
+    nfx = len(fx); step(SY.K_RT); step(SY.K_INC)                       # SECTION column: MIDI on (L1)
+    assert writes[-1] == (SY.MOUT_BASE + 6, 1), writes[-2:]
+    step(SY.K_DN); step(SY.K_INC); assert writes[-1] == (SY.MOUT_BASE + 0, 1), writes[-2:]   # CHANNEL 2
+    step(SY.K_F5); step(SY.K_INC); assert writes[-1] == (SY.MOUT_BASE + 7, 1), writes[-2:]   # L2
+    step(SY.K_LT); step(SY.K_INC); assert writes[-1] == (0x00AD + 0xBB, 1), writes[-2:]     # SPLIT
+    assert len(fx) == nfx, 'MIDI OUT edits must not reload the effects chip'
+    step(SY.K_FXB); assert sim.ram[SY.PG - 0xC000] == SY.PIDX['fx']           # EFFECT/CTRL key
+    sim.ram[SY.M_ON - 0xC000] = 0; sim.ram[SY.UPREV - 0xC000] = 0; step(shot=False)   # closed, stock runs
+    sim.ram[SY.KEYMAP_FX[0] - 0xC000] = SY.KEYMAP_FX[1]; step(shot=False)    # EFFECT/CTRL with the menu closed
+    assert sim.ram[SY.M_ON - 0xC000] == 1 and sim.ram[SY.PG - 0xC000] == SY.PIDX['fx']
+    sim.ram[SY.KEYMAP_FX[0] - 0xC000] = 0
+    for r56, pg in ((0x37, 'synth'), (0x2F, 'fx'), (0x42, 'tools'), (0x1D, 'midi')):   # stock enters a cut screen
+        sim.ram[SY.M_ON - 0xC000] = 0; sim.reg[SY.R5A_] = 0; sim.reg[SY.R56_] = r56; n = len(calls); step(shot=False)
+        assert sim.reg[SY.R56_] == 1 and calls[n:] == ['off', 'enter'], (hex(r56), calls[n:])
+        assert sim.ram[SY.M_ON - 0xC000] == 1 and sim.ram[SY.PG - 0xC000] == SY.PIDX[pg], hex(r56)
+    sim.ram[SY.M_ON - 0xC000] = 0; sim.reg[SY.R56_] = 0x36; sim.reg[SY.R5A_] = 3; n = len(calls); step(shot=False)
+    assert calls[n:] == ['ui'] and sim.ram[SY.M_ON - 0xC000] == 0, 'edit modes are left alone'
+    sim.reg[SY.R56_] = 1; sim.reg[SY.R5A_] = 0                          # KNOB LOCK: menu closed, slider 1 still
+    assert sim.ram[SY.L_VALID - 0xC000] == 1                           # drives the last item it took (DLM MODE)
+    n0 = len(writes); sim.ram[SY.SLD - 0xC000] = 0; step(shot=False)
+    assert [w for w in writes[n0:]] == [(0x0351 + k * 0x3E + 0x0D, 0) for k in range(4)], writes[n0:]
+    assert sim.ram[SY.SLD_LAST - 0xC000] == 0 and calls[-1] == 'ui'
+    sim.ram[SY.KLOCK - 0xC000] = 1; n0 = len(writes); sim.ram[SY.SLD - 0xC000] = 127; step(shot=False)
+    assert writes[n0:] == [], 'KNOB LOCK OFF: slider 1 is the stock slider again'
+    sim.ram[SY.KLOCK - 0xC000] = 0
     out, last = [], None
     for sh in shots:
         if sh != last: out.append(sh); last = sh
@@ -399,9 +591,6 @@ def render(g, t):
             for k, on in enumerate(row):
                 if on: tx[r * 8 + y, c * 6 + k] = True
     return unpack(g) ^ tx
-
-
-LCD_ON, LCD_OFF = np.array([40, 44, 48], np.uint8), np.array([158, 170, 160], np.uint8)
 
 
 def save_tour(tour, path):

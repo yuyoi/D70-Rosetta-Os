@@ -1,7 +1,7 @@
 """Small two-pass MCS-96 assembler for the Rosetta player. Every emitted instruction is checked by decoding it back
 with fw/mcs96.py (the decoder that matches the stock ROM) and comparing the text."""
 import os, sys
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 from mcs96 import decode
 
 

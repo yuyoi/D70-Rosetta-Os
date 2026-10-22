@@ -111,3 +111,24 @@ working test bench for Rosetta OS with the debugger on (`-debug -debugger none`)
   CG RAM 0x1800 (stock loads an ASCII font, so text codes are ASCII). Free text RAM: 0x1680-0x17FF.
 - **Words at odd addresses** read the even word (A0 ignored): tables of pointers must be word aligned.
 - **CMPL (opcode C5)** is used by the stock SysEx code (page 5 0xA006); MAME 0.270's CPU core lacks it.
+
+## v0.6 findings
+
+- **Keyboard:** key ISR 0x15BC reads 0x0609 (key, note = (k & 0x7F) + 0x1C = 28-103 on the 76 keys) and 0x0608
+  (velocity: **bit 7 set = key down**, clear = key up with release velocity) into the ring at RAM 0xC200. The page-4
+  pump 0xB481 fetches events through the far-call entry 0x1092 (-> 0x1F42) and queues them with tag 0x10 at 0xC300
+  (0xB49F); 0x7910 hands them to page 6 0x8295, which sends MIDI 9n and keeps one byte per key at 0xEBC7.
+- **Alpha Dial:** counted on the panel board. Page 4 entry 0x8018 (-> 0xAA9C) clocks one byte out over PORT1 and
+  negates it: R1C = signed clicks since the last read. Stock edit screens call it through the page-4 stub 0x1056.
+- **Panel key codes:** table at page 4 0xA703 (64 entries, bank n of the scan bytes D378-D37F, bit b).
+  EFFECT/CTRL = 0x1A, MIDI OUT = 0x19, Up 0x23, Down 0x24, Left 0x25, Right 0x26, Dec 0x27, Inc 0x28.
+- **Screens:** play screen R56 (UI mode R5A = 0). Step routines 0x345A[R56], enter routines 0x3502[R56] (a screen
+  change is STB R56 ; LCALL 0x52ED ; LJMP 0x34F4), display records page 5 0xAC46[R56] -> (R59, R57). R59 indexes the
+  display lists on page 4 (pointer table 0x8064, 0x38 lists with the text inline). Edit UI modes: handlers 0x340C,
+  display records page 5 0xB0D6. COMMAND's list: page 4 0xAD90, 29 x 17 bytes (16 characters + target R56).
+- **MIDI OUT parameters** (performance common, flat 0x00AD + offset): 0xB8 velocity curve, 0xB9 velocity sens,
+  0xBA key mode, 0xBB split, 0xBC-0xD0 controller maps, 0xD1-0xD4 velocity mode / threshold, 0xD5 + s * 7 section
+  s: Tx channel, volume, program, transpose (24 = 0), zone low / high, MIDI OUT switch.
+- **Effects:** after writing performance common 0xAD-0xB7, stock's effects reload (page 3 entry 0x8003) has to run.
+- **LCD:** the D-70's T6963C ignores the bit set / reset commands; draw with read (C5) / OR / write (C4).
+- **80C196:** a 32-bit MULU / DIVU result needs a 4-aligned register (R20, R24, ...).

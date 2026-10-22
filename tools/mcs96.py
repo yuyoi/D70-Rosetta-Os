@@ -142,3 +142,14 @@ def decode(d, p, pc=None):
         return ('XCHB   %s, %s' % (reg(d[q + 2]), reg(d[q + 1])), q + 3 - p, None, None)
     return ('.db %02X' % d[p], 1, 'bad', None)
 
+
+if __name__ == '__main__':
+    import sys
+    sys.path.insert(0, '.')
+    import romload
+    c = romload.load_v111()
+    p = 0x1000
+    for _ in range(40):
+        t, n, k, tg = decode(c, p)
+        print('%04X: %-12s %s' % (p, c[p:p + n].hex(' '), t))
+        p += n
