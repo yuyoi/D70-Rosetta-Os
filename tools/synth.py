@@ -27,7 +27,7 @@ XOR with text. Envelope lines are drawn with the T6963C bit-set command.
 from asm import Asm
 
 ORG = 0x8143                   # page 7, after the kept sample-table readers 0x8133 / 0x813B
-END = 0x99DF                   # code limit; 0x99E0-0x9C47 holds SYNTH data (DATA_SEGS)
+END = 0x9BBF                   # code limit; 0x9BA0-0x9C47 + fixed ROM blocks hold SYNTH data (DATA_SEGS)
 # stock entry points
 GETKEY, P4 = 0x8006, 0x1056    # LD R1A,#8006 ; LCALL 1056 -> C = key, R1C = code
 DIAL = 0x8018                  # page 4 0xAA9C: panel counter byte, NEGB -> R1C = signed clicks (stock 0x1A35)
@@ -41,7 +41,10 @@ SCR_INIT, SCR_DRAW, SCR_LEDS = 0x37F1, 0x38A5, 0x4B1C
 KEYMAP_USER = (0xD37C, 0x02)   # bank 4 bit 1
 KEYMAP_FX = (0xD37F, 0x01)     # EFFECT/CTRL: bank 7 bit 0 (key code 0x1A, table page 4 0xA703)
 KEYMAP_MIDI = (0xD37B, 0x02)   # MIDI OUT: bank 3 bit 1 (key code 0x19)
-K_FXB, K_MIDB = 0x1A, 0x19
+KEYMAP_CARD = (0xD37D, 0x01)   # PCM CARD: bank 5 bit 0 (key code 0x34); stock would start its tone list
+K_FXB, K_MIDB, K_CARDB = 0x1A, 0x19, 0x34
+GK_STOCK = 0xA5D8              # page 4: stock key read (scans the panel itself); jump table 0x8006 -> gk_hook
+CARDQ = 0xC4AF                 # gk_hook took PCM CARD from stock (menu closed): rt_ui opens the wave page
 LCD_D, LCD_C = 0x0800, 0x0802
 LCD_TEXT = 0x1680              # our text page: stock draws text at 0x1400 AND 0x1540 (R9A), CG RAM is 0x1800
 assert 0x1680 <= LCD_TEXT and LCD_TEXT + 320 <= 0x1800
@@ -64,11 +67,15 @@ KLOCK = 0xC600 + SET_OFF       # KNOB LOCK: 0 = ON (the default after power-up),
 L_VALID, L_REC, L_SEC = 0xC628, 0xC629, 0xC62F   # locked item: ITYPE IAUX IMIN IMAX IAREA IOFF, section
 R56_, R5A_ = 0x56, 0x5A        # stock: play screen, UI mode (0 = play)
 SCR_OFF, SCR_ENTER = 0x52ED, 0x34F4   # stock screen change: LEDs off, then BR to the enter routine of R56
-REDIRECT = [(0x14, 0x1E, 'midi'), (0x1F, 0x20, 'fx'), (0x2C, 0x2E, 'midi'), (0x2F, 0x2F, 'fx'),
+REDIRECT = [(0x13, 0x13, 'layers'), (0x46, 0x46, 'wave'), (0x14, 0x1E, 'midi'), (0x1F, 0x20, 'fx'), (0x2C, 0x2E, 'midi'), (0x2F, 0x2F, 'fx'),
             (0x36, 0x3F, 'synth'), (0x41, 0x44, 'tools'), (0x4A, 0x4B, 'midi')]   # R56 ranges cut in cuts.py
 EV = 0xC480                    # envelope page: the 7 values, for the lines
 NB = 0xC490                    # number / name text (16)
 ZL, ZH = 0xC4A0, 0xC4A4        # layers page: zone bar start/end in pixels (4 each)
+STOP = 0xC44A                  # LIST pages: first item on screen
+LZ_PG = 0xC44B                 # LIST pages: zone strip read for this page (0xFF = read again)
+RB_T, RB_V = 0xC44C, 0xC452    # LIST pages: per visible row, bar type (0 none, 1 level, 2 pan) + value
+BX0, BX1 = 138, 202            # bars: x range (values end at x 216+)
 LE2 = 0xC4A8                   # line: 2 * err
 NI = 0xC4AA                    # name reader: character index
 BOOTHI, BOOTN = 0xC4AD, 0xC4AE # boot delay: last TIMER1 high byte, wrap count
@@ -84,15 +91,15 @@ A_TONE, A_PSEC, A_PCOM, A_PERF, A_RAM, A_MOUT = 0, 1, 2, 3, 4, 5   # PERF = perf
 MOUT_BASE = 0x00AD + 0xD5      # A_MOUT: performance MIDI OUT section s at MOUT_BASE + s * 7 (manual table 22)
 FX_LAST = 0xB7                 # PERF offsets 0xAD..0xB7 are the effects (reload the chip after a write)
 RAM_BASE = 0xC600              # A_RAM items: settings in RAM (arp.py), offset = item offset
-T_NUM, T_PLUS1, T_LIST, T_NOTE, T_MEDIA, T_NAME, T_WAVE, T_WNAME = 0, 1, 2, 3, 4, 5, 6, 7
-K_ROOT, K_SPLIT, K_ENV, K_LAYERS = 0, 1, 2, 3
+T_NUM, T_PLUS1, T_LIST, T_NOTE, T_MEDIA, T_NAME, T_WAVE, T_WNAME, T_LINK = 0, 1, 2, 3, 4, 5, 6, 7, 8   # LINK: aux = page
+K_ROOT, K_SPLIT, K_ENV, K_LAYERS, K_LIST = 0, 1, 2, 3, 4   # LIST: one scrolling column
 
 LISTS = {'offon': ['OFF', 'ON'], 'tvf': ['LPF', 'BPF', 'HPF', 'BYPASS'], 'lfo': ['TRI', 'SINE', 'SQUARE', 'SAW', 'RANDOM'],
          'ofs': ['-100%', '-50%', '0', '+50%', '+100%'], 'out': ['DRY', 'REVERB', 'CHORUS', 'DIRECT'],
          'kmode': ['LAYER', 'SPLIT', 'ZONE'], 'ab': ['A', 'B'],
          'rev': ['ROOM 1', 'ROOM 2', 'ROOM 3', 'HALL 1', 'HALL 2', 'GATE', 'DELAY', 'X DELAY'],
          'cho': ['CHORUS 1', 'CHORUS 2', 'FB-CHORUS', 'FLANGER', 'SHORT DLY'], 'prepost': ['PRE REV', 'POST REV'],
-         'arpm': ['UP', 'DOWN', 'UP-DOWN', 'RANDOM'], 'lock': ['ON', 'OFF']}
+         'arpm': ['UP', 'DOWN', 'UP-DOWN', 'RANDOM'], 'lock': ['ON', 'OFF'], 'dlmv': ['OFF  >', 'ON  >']}
 LIST_IDS = {k: i for i, k in enumerate(LISTS)}
 
 
@@ -111,13 +118,14 @@ PAGES = [  # (key, title, kind, head0, head1, items0, items1); list pages take t
     ('synth', 'SYNTH', K_ROOT, '', '', [], []),
     ('tools', 'TOOLS', K_ROOT, '', '', [], []),
     ('about', 'ABOUT', K_ROOT, '', '', [], []),
-    ('layers', 'LAYERS', K_LAYERS, '', '', [], []),
-    ('wave', 'WAVE', K_SPLIT, 'WAVE', 'ZONE',
-     [it('NAME', A_TONE, 0x00, T_NAME, 0, 0), it('WAVE', A_TONE, 0x0A, T_WAVE, 0, 0),   # INC/DEC sweep all waves
-      it('SOUND', A_TONE, 0x37, T_WNAME, 0, 0)],                                        # the wave's own name
-     [it('LOW', A_PSEC, 0x0B, T_NOTE, 0, 127), it('HIGH', A_PSEC, 0x0C, T_NOTE, 0, 127),
+    ('layers', 'SOUND', K_LAYERS, '', '', [], []),        # the four layers at a glance; ENTER = that layer
+    ('wave', 'LAYER', K_LIST, '', '',                      # one layer, everything about it, one scrolling column
+     [it('WAVE', A_TONE, 0x0A, T_WAVE, 0, 0),           # INC/DEC sweep all waves; shows number + name
+      it('ZONE LOW', A_PSEC, 0x0B, T_NOTE, 0, 127), it('ZONE HIGH', A_PSEC, 0x0C, T_NOTE, 0, 127),
+      it('LEVEL', A_PSEC, 0x01, T_NUM, 0, 127), it('PAN', A_PSEC, 0x09, T_NUM, 0, 14, 7),   # drawn as bars too
       it('SHIFT', A_PSEC, 0x02, T_NUM, 0, 48, 24), it('FINE', A_PSEC, 0x03, T_NUM, 0, 127, 64),
-      it('PAN', A_PSEC, 0x09, T_NUM, 0, 14, 7), it('OUTPUT', A_PSEC, 0x08, T_LIST, 0, 3, L('out'))]),
+      it('OUTPUT', A_PSEC, 0x08, T_LIST, 0, 3, L('out')),
+      it('DLM', A_TONE, 0x0C, T_LIST, 0, 1, L('dlmv'))], []),   # ENTER: the DLM page + loop view
     ('dlm', 'DLM', K_SPLIT, 'DLM', 'LOOP SLICE',          # Differential Loop Modulation: loops a slice of the wave
      [it('DLM', A_TONE, 0x0C, T_LIST, 0, 1, L('offon')), it('MODE', A_TONE, 0x0D, T_LIST, 0, 1, L('ab')),
       it('START', A_TONE, 0x0E, T_NUM, 0, 127), it('LENGTH', A_TONE, 0x0F, T_PLUS1, 0, 127)], []),
@@ -173,15 +181,15 @@ PAGES = [  # (key, title, kind, head0, head1, items0, items1); list pages take t
       it('PROGRAM', A_MOUT, 2, T_PLUS1, 0, 127), it('VOLUME', A_MOUT, 1, T_NUM, 0, 127),
       it('XPOSE', A_MOUT, 3, T_NUM, 0, 48, 24)]),
 ]
-SYNTH_ITEMS = ['layers', 'wave', 'dlm', 'pitch', 'filter', 'fenv', 'amp', 'aenv', 'lfo', 'fx', 'arp', 'midi']
-ROOT_LABELS = {'layers': 'LAYERS', 'wave': 'WAVE / ZONE', 'pitch': 'PITCH', 'filter': 'FILTER',
+SYNTH_ITEMS = ['layers', 'pitch', 'filter', 'fenv', 'amp', 'aenv', 'lfo', 'fx', 'arp', 'midi']
+ROOT_LABELS = {'layers': 'SOUND', 'pitch': 'PITCH', 'filter': 'FILTER',
                'fenv': 'FILTER ENV', 'amp': 'AMP', 'aenv': 'AMP ENV', 'lfo': 'LFO', 'dlm': 'DLM',
                'fx': 'EFFECTS', 'arp': 'ARP', 'midi': 'MIDI OUT'}
 PIDX = {p[0]: i for i, p in enumerate(PAGES)}
 LI_LINK, LI_ACT, LI_INFO = 0, 1, 2
 ACT_CLOSE, ACT_DUMP = 0, 1
 LIST_PAGES = {   # list page -> items (label, kind, arg); arg = page key, action number or info text
-    'rosetta': [('SYNTH', LI_LINK, 'synth'), ('TOOLS', LI_LINK, 'tools'), ('SETTINGS', LI_LINK, 'settings'),
+    'rosetta': [('SYNTH', LI_LINK, 'synth'), ('QUICK PLAY', LI_LINK, 'wave'), ('TOOLS', LI_LINK, 'tools'), ('SETTINGS', LI_LINK, 'settings'),
                 ('ABOUT', LI_LINK, 'about'),
                 ('EXIT TO D-70', LI_ACT, ACT_CLOSE)],
     'synth': [(ROOT_LABELS[k], LI_LINK, k) for k in SYNTH_ITEMS],
@@ -191,6 +199,7 @@ LIST_PAGES = {   # list page -> items (label, kind, arg); arg = page key, action
 }
 PARENT = {'rosetta': None, 'synth': 'rosetta', 'tools': 'rosetta', 'settings': 'rosetta', 'about': 'rosetta'}
 PARENT.update({k: 'synth' for k in SYNTH_ITEMS})
+PARENT.update({'wave': 'layers', 'dlm': 'wave'})   # SOUND > LAYER > LOOP VIEW
 RSAVE = 0xC4B0                 # list selection per page (16)
 SBUF_, TIMER1_ = 0x07, 0x0A
 
@@ -215,7 +224,9 @@ def emit(a):
     a.L('lk_c'); a.ldb_lidx(T, IDX, L_REC); a.stb_lidx(IDX, ITYPE, T); a.inc(IDX); a.djnz(C, 'lk_c')
     lda(T, L_SEC); sta(SEC, T); a.lcall('snap_go')
     a.L('lk_x')
-    a.ldb(T, R5A_); a.cmpbi(T, 0); J('JNE', 'rd_x')     # play mode on a screen Rosetta replaced (cuts.SCREENS):
+    a.ldb(T, R5A_); a.cmpbi(T, 0x0E); J('JNE', 'rd_m')  # the old tone picker (UI mode 0x0E): back to play, LAYERS
+    a.clrb(T); a.ldb(R5A_, T); a.ldbi(V, PIDX['layers']); a.sjmp('rd_go')
+    a.L('rd_m'); a.cmpbi(T, 0); J('JNE', 'rd_x')        # play mode on a screen Rosetta replaced (cuts.SCREENS):
     a.ldb(T, R56_)                                       # back to the Tone Display, the menu opens instead
     for n, (lo, hi, pg) in enumerate(REDIRECT):
         a.cmpbi(T, lo); J('JNC', 'rd%d' % n); a.cmpbi(T, hi + 1); J('JC', 'rd%d' % n)
@@ -226,12 +237,15 @@ def emit(a):
     stock(SCR_OFF, P2); stock(SCR_ENTER, P2)            # stock's own screen change: LEDs off, enter screen 01
     lda(V, RD_PG); a.ljmp('bk4')
     a.L('rd_x')
-    a.clrb(T)                                            # T = USER 1 | EFFECT/CTRL 2 | MIDI OUT 4, held now
+    lda(T, CARDQ); a.cmpbi(T, 0); J('JE', 'bkc')       # PCM CARD (taken from stock's key read): the wave page
+    a.clrb(T); sta(CARDQ, T); a.ldbi(V, PIDX['wave']); a.ljmp('bk4')
+    a.L('bkc'); a.clrb(T)                                # T = USER 1 | EFFECT/CTRL 2 | MIDI OUT 4, held now
     for n, (adr, bit) in enumerate((KEYMAP_USER, KEYMAP_FX, KEYMAP_MIDI)):
         lda(U, adr); a.andbi(U, bit); J('JE', 'bk%d' % n); a.orbi(T, 1 << n); a.L('bk%d' % n)
     lda(U, UPREV); sta(UPREV, T); a.b(0x12, U); a.andb(T, U); J('JE', 'rt_stock')   # NOTB U: went down now
     a.ldbi(V, PIDX['midi']); a.jbs(T, 2, 'bk4'); a.ldbi(V, PIDX['fx']); a.jbs(T, 1, 'bk4'); a.clrb(V)
-    a.L('bk4'); a.ldbi(T, 1); sta(M_ON, T); a.clrb(T)  # open: USER at the top page, the others on their own
+    a.L('bk4'); a.ldbi(T, 0xFF); sta(LZ_PG, T)
+    a.ldbi(T, 1); sta(M_ON, T); a.clrb(T)              # open: USER at the top page, the others on their own
     for v in (SEL, COL, RSEL, RTOP): sta(v, T)
     sta(SEC, T); sta(PG, V)
     a.lcall('draw'); a.ret()
@@ -243,9 +257,10 @@ def emit(a):
     lda(T, BOOTN); a.incb(T); sta(BOOTN, T); a.cmpbi(T, 24); J('JNE', 'rt_x')
     a.ldbi(T, 1); sta(M_ON, T); a.lcall('draw'); a.ret()
     a.L('rt_on1')                                        # sliders: slider 1 snaps the selected item on value pages
-    a.lcall('page_ptr'); lda(V, KIND); a.cmpbi(V, K_SPLIT); J('JE', 'sld1'); a.cmpbi(V, K_ENV); J('JNE', 'sld2')
+    a.lcall('page_ptr'); lda(V, KIND); a.cmpbi(V, K_SPLIT); J('JE', 'sld1'); a.cmpbi(V, K_LIST); J('JE', 'sld1')
+    a.cmpbi(V, K_ENV); J('JNE', 'sld2')
     a.L('sld1'); lda(T, SLD); lda(U, SLD_LAST); a.cmpb(T, U); J('JE', 'sld2')
-    sta(SLD_LAST, T); a.lcall('snap'); a.lcall('draw')   # marked as seen: the slider loop below skips it
+    a.lcall('snap')                                      # taken: marked as seen + redrawn; else still CUTOFF
     a.L('sld2'); stock(SL_LOOP, P2)                      # then the play-screen slider loop, as outside the menu
     # Alpha Dial: stock's panel counter read, signed
     stock(DIAL, P4); a.cmpbi(T, 0); J('JE', 'rt_k')     # R1C = clicks since the last read (+ = clockwise)
@@ -278,7 +293,8 @@ def emit(a):
     a.lcall('page_ptr')
     lda(T, KEYC)
     a.cmpbi(T, K_FXB); J('JNE', 'kb1'); a.ldbi(T, PIDX['fx']); a.sjmp('kb2')        # EFFECT/CTRL, MIDI OUT:
-    a.L('kb1'); a.cmpbi(T, K_MIDB); J('JNE', 'kb3'); a.ldbi(T, PIDX['midi'])       # straight to our pages
+    a.L('kb1'); a.cmpbi(T, K_MIDB); J('JNE', 'kb1c'); a.ldbi(T, PIDX['midi']); a.sjmp('kb2')   # straight to our pages
+    a.L('kb1c'); a.cmpbi(T, K_CARDB); J('JNE', 'kb3'); a.ldbi(T, 0xFF); sta(LZ_PG, T); a.ldbi(T, PIDX['wave'])
     a.L('kb2'); sta(PG, T); a.clrb(T); sta(SEL, T); sta(COL, T); a.ret()
     a.L('kb3'); lda(T, KEYC)
     a.cmpbi(T, K_F5); J('JNE', 'k1')                   # F5: next section (L1 L2 U3 U4 ALL)
@@ -301,10 +317,17 @@ def emit(a):
     a.L('kclamp'); a.lcall('page_ptr'); lda(T, SEL); lda(U, NITEM); a.cmpb(T, U); J('JNC', 'kpr')
     a.decb(U); sta(SEL, U); a.ret()
     a.L('kp5'); a.cmpbi(T, K_INC); J('JE', 'kval'); a.cmpbi(T, K_DEC); J('JE', 'kval')
+    a.cmpbi(T, K_ENT); J('JNE', 'kpr')                   # ENTER on a link: open its page
+    lda(T, COL); lda(U, SEL); a.lcall('item_load'); lda(T, ITYPE); a.cmpbi(T, T_LIST); J('JNE', 'kpl')
+    lda(T, IAUX); a.cmpbi(T, L('dlmv')); J('JNE', 'kpl')
+    a.ldbi(T, PIDX['dlm']); a.sjmp('kpg')                # the DLM row: its page
+    a.L('kpl'); lda(T, ITYPE); a.cmpbi(T, T_LINK); J('JNE', 'kpr'); lda(T, IAUX)
+    a.L('kpg'); sta(PG, T); a.clrb(T); sta(SEL, T); sta(COL, T)
     a.L('kpr'); a.ret()
     a.L('kval')                                          # INC / DEC the selected item
     lda(T, COL); lda(U, SEL); a.lcall('item_load')
     lda(T, ITYPE); a.cmpbi(T, T_NAME); J('JE', 'kpr'); a.cmpbi(T, T_WNAME); J('JE', 'kpr')
+    a.cmpbi(T, T_LINK); J('JE', 'kpr')
     a.cmpbi(T, T_WAVE); J('JNE', 'kv_n'); a.ljmp('wave_step')
     a.L('kv_n'); lda(T, SEC); a.cmpbi(T, 4); J('JNE', 'kv0'); a.clrb(T)
     a.L('kv0'); sta(SECW, T); a.lcall('item_read')      # value from the section (L1 when ALL)
@@ -319,9 +342,11 @@ def emit(a):
     lda(T, COL); lda(U, SEL); a.lcall('item_load')
     lda(T, ITYPE); a.cmpbi(T, T_NAME); J('JC', 'kpr')   # names and waves: buttons / dial only
     lda(T, IAREA); a.cmpbi(T, A_RAM); J('JNE', 'sn_l'); lda(T, IOFF); a.cmpbi(T, SET_OFF); J('JC', 'kpr')   # settings
-    a.L('sn_l'); a.ldbi(C, 6); a.clr(IDX)               # KNOB LOCK: remember the item (ITYPE..IOFF) + section
+    a.L('sn_l'); lda(T, SLD); sta(SLD_LAST, T)          # taken: the stock slider loop skips slider 1
+    a.ldbi(C, 6); a.clr(IDX)                             # KNOB LOCK: remember the item (ITYPE..IOFF) + section
     a.L('sn_c'); a.ldb_lidx(T, IDX, ITYPE); a.stb_lidx(IDX, L_REC, T); a.inc(IDX); a.djnz(C, 'sn_c')
     lda(T, SEC); sta(L_SEC, T); a.ldbi(T, 1); sta(L_VALID, T)
+    a.lcall('snap_go'); a.ljmp('draw')
     a.L('snap_go')
     lda(T, SEC); a.cmpbi(T, 4); J('JNE', 'sn0'); a.clrb(T)
     a.L('sn0'); sta(SECW, T); a.lcall('item_read')
@@ -364,7 +389,8 @@ def emit(a):
     a.L('kl2'); a.cmpbi(T, K_DN); J('JNE', 'kl3'); lda(T, SEC); a.cmpbi(T, 4); J('JNE', 'kl2b'); a.clrb(T)   # ALL sits on the L1 row
     a.L('kl2b'); a.cmpbi(T, 3); J('JC', 'kpr'); a.incb(T)
     sta(SEC, T); a.ret()
-    a.L('kl3'); a.cmpbi(T, K_ENT); J('JNE', 'kl4'); a.ldbi(T, PIDX['wave']); sta(PG, T); a.clrb(T)
+    a.L('kl3'); a.cmpbi(T, K_ENT); J('JNE', 'kl4'); a.ldbi(T, 0xFF); sta(LZ_PG, T)
+    a.ldbi(T, PIDX['wave']); sta(PG, T); a.clrb(T)
     sta(SEL, T); sta(COL, T); a.ret()
     a.L('kl4'); a.cmpbi(T, K_INC); J('JE', 'kl5'); a.cmpbi(T, K_DEC); J('JNE', 'kpr')
     a.L('kl5')                                           # INC / DEC = section level
@@ -414,7 +440,7 @@ def emit(a):
     lda(T, IOFF); a.ldbze(IDX, T); lda(T, VAL); a.stb_lidx(IDX, RAM_BASE, T); a.ret()
     a.L('wr1'); a.lcall('addr'); ldw(RD4, ADDR); a.clr(RD6); lda(RCA, VAL); stock(WR, P5); a.ret()
     a.L('item_write')                                    # VAL -> current section, or all four, then apply
-    a.clrb(RDE)
+    a.ldbi(T, 0xFF); sta(LZ_PG, T); a.clrb(RDE)
     lda(T, SEC); a.cmpbi(T, 4); J('JE', 'iw_all'); sta(SECW, T); a.lcall('write1'); a.sjmp('iw_ap')
     a.L('iw_all'); a.clrb(T); sta(SECW, T)
     a.L('iw_l'); a.lcall('write1'); lda(T, SECW); a.incb(T); sta(SECW, T); a.cmpbi(T, 4); J('JNE', 'iw_l')
@@ -493,9 +519,10 @@ def emit(a):
     a.cmpbi(T, K_ROOT); J('JNE', 'dk1'); a.lcall('draw_root'); a.sjmp('dgfx')
     a.L('dk1'); a.cmpbi(T, K_SPLIT); J('JNE', 'dk2'); a.lcall('draw_split'); a.sjmp('dgfx')
     a.L('dk2'); a.cmpbi(T, K_ENV); J('JNE', 'dk3'); a.lcall('draw_env_text'); a.sjmp('dgfx')
-    a.L('dk3'); a.lcall('draw_layers')
+    a.L('dk3'); a.cmpbi(T, K_LIST); J('JNE', 'dk4'); a.lcall('draw_list'); a.sjmp('dgfx')
+    a.L('dk4'); a.lcall('draw_layers')
     a.L('dgfx'); a.lcall('gfx')
-    lda(T, PG); a.cmpbi(T, PIDX['dlm']); J('JNE', 'dg1'); a.ljmp('wave_view')
+    lda(T, PG); a.cmpbi(T, PIDX['dlm']); J('JNE', 'dg1'); a.ldi_l(R1A, 'wave_view'); a.lcall(P4); a.ret()
     a.L('dg1'); lda(T, KIND); a.cmpbi(T, K_ENV); J('JNE', 'dret'); a.lcall('env_lines')
     a.L('dret'); a.ret()
 
@@ -533,7 +560,8 @@ def emit(a):
     lda(T, SEC); a.cmpbi(T, 4); J('JNE', 'iv0'); a.clrb(T)
     a.L('iv0'); sta(SECW, T)
     lda(T, ITYPE); a.cmpbi(T, T_NAME); J('JE', 'iv_name')
-    a.cmpbi(T, T_WAVE); J('JNE', 'iv1'); a.ljmp('iv_wave')
+    a.cmpbi(T, T_LINK); J('JNE', 'ivk'); a.ldi_l(Q, 's_gt'); a.ret()
+    a.L('ivk'); a.cmpbi(T, T_WAVE); J('JNE', 'iv1'); a.ljmp('iv_wave')
     a.L('iv1'); a.cmpbi(T, T_WNAME); J('JNE', 'iv2'); a.ljmp('iv_wname')
     a.L('iv2'); a.lcall('item_read'); a.lcall('fmt'); a.ret()
     a.L('iv_name')                                       # 10 name bytes -> NB.. (NB + 10 spill into ZL: free here)
@@ -553,6 +581,32 @@ def emit(a):
     a.lcall('tpush'); lda(T, ROW); a.incb(T); sta(ROW, T); a.cmpbi(T, 8); J('JNE', 'de1')
     lda(T, SEL); a.incb(T); sta(SELROW, T); a.ldbi(T, 23); sta(SC0, T); a.ldbi(T, 39); sta(SC1, T); a.ret()
 
+    a.L('draw_list')                                     # row 1: the four zones (gfx), rows 2-7: one column
+    lda(T, PG); lda(U, LZ_PG); a.cmpb(T, U); J('JE', 'dli0'); sta(LZ_PG, T)   # zones: once per visit
+    a.clrb(T); sta(I, T)                                 # ZL / ZH = zone LOW / HIGH in pixels 0..238, per section
+    a.L('dli1'); lda(T, I); sta(SECW, T); a.ldbi(T, A_PSEC); sta(IAREA, T)
+    for off_, arr in ((0x0B, ZL), (0x0C, ZH)):
+        a.ldbi(T, off_); sta(IOFF, T); a.lcall('item_read'); lda(T, VAL); a.ldbi(U, 15)
+        a.b(0x5C, U, T, W); a.shr(W, 3); lda(U, I); a.ldbze(IDX, U); a.stb_lidx(IDX, arr, W)   # MULUB W, T, U
+    lda(T, I); a.incb(T); sta(I, T); a.cmpbi(T, 4); J('JNE', 'dli1')
+    a.L('dli0'); a.ldbi(T, 1); sta(ROW, T); a.lcall('tclr'); a.lcall('tpush')
+    lda(T, SEL); lda(U, STOP); a.cmpb(T, U); J('JC', 'dli2'); sta(STOP, T)   # scroll: SEL stays in rows 2-7
+    a.L('dli2'); lda(U, STOP); a.addbi(U, 5); a.cmpb(U, T); J('JC', 'dli3'); a.subbi(T, 5); sta(STOP, T)
+    a.L('dli3'); a.ldbi(T, 2); sta(ROW, T)
+    a.L('dli4'); a.lcall('tclr'); lda(T, ROW); a.subbi(T, 2); a.ldbze(IDX, T); a.stb_lidx(IDX, RB_T, 0)
+    lda(U, STOP); a.addb(T, U); lda(U, NITEM); a.cmpb(T, U); J('JC', 'dli5')
+    a.ldb(U, T); a.clrb(T); a.lcall('item_load')
+    a.ld_lidx(Q, 0, ITEMP); a.ld_idx(Q, Q, 0); a.ldbi(T, 1); a.lcall('put')
+    a.lcall('item_value'); a.ldbi(T, 38); a.lcall('rput')
+    a.clrb(V); lda(T, IAREA); a.cmpbi(T, A_PSEC); J('JNE', 'dlb')   # LEVEL / PAN: also drawn as a bar
+    lda(T, IOFF); a.cmpbi(T, 0x01); J('JNE', 'dla'); a.ldbi(V, 1); a.sjmp('dlb')
+    a.L('dla'); a.cmpbi(T, 0x09); J('JNE', 'dlb'); a.ldbi(V, 2)
+    a.L('dlb'); lda(T, ROW); a.subbi(T, 2); a.ldbze(IDX, T); a.stb_lidx(IDX, RB_T, V)
+    lda(U, VAL); a.stb_lidx(IDX, RB_V, U)
+    a.L('dli5'); a.lcall('tpush'); lda(T, ROW); a.incb(T); sta(ROW, T); a.cmpbi(T, 8); J('JNE', 'dli4')
+    lda(T, SEL); lda(U, STOP); a.subb(T, U); a.addbi(T, 2); sta(SELROW, T)
+    a.clrb(T); sta(SC0, T); a.ldbi(T, 39); sta(SC1, T); a.ret()
+
     a.L('draw_layers')
     a.ldbi(T, 1); sta(ROW, T); a.lcall('tclr')
     a.ldi_l(Q, 's_lhead'); a.ldbi(T, 1); a.lcall('put'); a.ldi_l(Q, 's_lvl'); a.ldbi(T, 39); a.lcall('rput')
@@ -561,7 +615,7 @@ def emit(a):
     a.L('dl1'); a.lcall('tclr')
     lda(T, I); a.ldbze(IDX, T); a.add(IDX, IDX); a.ld_lidx_l(Q, IDX, 'sec_names'); a.ldbi(T, 1); a.lcall('put')
     lda(T, I); sta(SECW, T); a.ldbi(T, A_TONE); sta(IAREA, T); a.ldbi(T, T_NAME); sta(ITYPE, T)
-    a.lcall('iv_name_sec'); a.ldbi(T, 4); a.lcall('put')
+    a.lcall('iv_wname'); a.ldbi(T, 4); a.lcall('put')     # the layer's wave name
     a.ldbi(T, A_PSEC); sta(IAREA, T); a.ldbi(T, T_NOTE); sta(ITYPE, T)
     a.ldbi(T, 0x0B); sta(IOFF, T); a.lcall('item_read')
     lda(T, VAL); a.shrb(T, 1); a.addbi(T, 144); lda(U, I); a.ldbze(IDX, U); a.stb_lidx(IDX, ZL, T)
@@ -589,7 +643,6 @@ def emit(a):
         a.lcall('tpush')
     lda(T, SEC); a.cmpbi(T, 4); J('JNE', 'dl4'); a.clrb(T)
     a.L('dl4'); a.addbi(T, 2); sta(SELROW, T); a.clrb(T); sta(SC0, T); a.ldbi(T, 39); sta(SC1, T); a.ret()
-    a.L('iv_name_sec'); a.ldbi(T, T_NAME); sta(ITYPE, T); a.sjmp('iv_name')
 
     # ================= graphics layer: one pass, byte by byte =================
     a.L('gfx')
@@ -614,7 +667,10 @@ def emit(a):
     a.sjmp('g_sel')
     a.L('g_b2'); a.cmpbi(C, K_ENV); J('JNE', 'g_b3')
     a.cmpbi(V, 22); J('JNE', 'g_sel'); a.ldbi(X, 0x20); a.sjmp('g_sel')      # divider x = 132
-    a.L('g_b3'); a.cmpbi(C, K_LAYERS); J('JNE', 'g_sel')
+    a.L('g_b3'); a.cmpbi(C, K_LIST); J('JNE', 'g_b4'); a.cmpbi(U, 1); J('JNE', 'g_b3b')
+    a.lcall('g_strip'); a.sjmp('g_sel')
+    a.L('g_b3b'); J('JNC', 'g_sel'); a.lcall('g_bar'); a.sjmp('g_sel')
+    a.L('g_b4'); a.cmpbi(C, K_LAYERS); J('JNE', 'g_sel')
     a.cmpbi(U, 1); J('JNE', 'g_l1'); a.cmpbi(T, 7); J('JNE', 'g_sel'); a.ldbi(X, 0x3F); a.sjmp('g_sel')
     a.L('g_l1'); a.cmpbi(U, 2); J('JNC', 'g_sel'); a.cmpbi(U, 6); J('JC', 'g_sel')
     a.cmpbi(T, 2); J('JNC', 'g_sel'); a.cmpbi(T, 6); J('JC', 'g_sel')
@@ -628,6 +684,38 @@ def emit(a):
     lda(T, ROW); a.incb(T); sta(ROW, T); a.cmpbi(T, 64); J('JNE', 'gy')
     a.ret()
     a.L('g_inv'); a.b(0x95, 0x3F, X); a.ret()           # XORB X, #3F
+    a.L('g_strip')                                       # text row 1: zone of section y / 2 as a 2 px line,
+    a.ldb(Q, T); a.shrb(Q, 1); a.ldbze(IDX, Q)           # solid for the section shown, dotted for the others
+    a.ldb_lidx(Z, IDX, ZL); a.ldb_lidx(Z + 1, IDX, ZH)
+    lda(P, SEC); a.cmpbi(P, 4); J('JE', 'gs0'); a.cmpb(P, Q); J('JE', 'gs0')
+    a.ldbi(Q, 1); a.sjmp('gs1')
+    a.L('gs0'); a.clrb(Q)
+    a.L('gs1'); a.ldb(C, V); a.ldbi(C + 1, 6); a.b(0x5C, C + 1, C, C)   # C = column * 6
+    a.ldbi(P, 0x20); a.ldbi(P + 1, 6)
+    a.L('gs2'); a.cmpb(C, Z); J('JNC', 'gs3'); a.cmpb(Z + 1, C); J('JNC', 'gs3')
+    a.cmpbi(Q, 0); J('JE', 'gs4'); a.jbs(C, 0, 'gs3')   # dotted: even x only
+    a.L('gs4'); a.orb(X, P)
+    a.L('gs3'); a.incb(C); a.shrb(P, 1); a.djnz(P + 1, 'gs2')
+    a.ret()
+    a.L('g_bar')                                         # text rows 2-7: LEVEL bar / PAN marker, x BX0..BX1
+    a.ldbze(IDX, U); a.subi(IDX, 2); a.ldb_lidx(Q, IDX, RB_T); a.cmpbi(Q, 0); J('JE', 'gb_r')
+    a.ldb_lidx(Z, IDX, RB_V); a.cmpbi(Q, 1); J('JNE', 'gb0')
+    a.ldb(Z + 1, Z); a.shrb(Z + 1, 1); a.addbi(Z + 1, BX0); a.sjmp('gb00')     # level: fill up to BX0 + v / 2
+    a.L('gb0'); a.ldb(Z + 1, Z); a.addb(Z + 1, Z + 1); a.addb(Z + 1, Z + 1); a.addbi(Z + 1, BX0 + 4)   # pan
+    a.L('gb00'); a.ldb(C, V); a.ldbi(C + 1, 6); a.b(0x5C, C + 1, C, C)   # C = x of the byte's first pixel
+    a.ldbi(P, 0x20); a.ldbi(P + 1, 6)
+    a.L('gb1'); a.cmpbi(T, 7); J('JE', 'gb_n'); a.cmpbi(C, BX0); J('JNC', 'gb_n'); a.cmpbi(C, BX1 + 1); J('JC', 'gb_n')
+    a.cmpbi(Q, 1); J('JNE', 'gb_p')
+    a.cmpbi(T, 0); J('JE', 'gb_on'); a.cmpbi(T, 6); J('JE', 'gb_on')          # level: outline + fill
+    a.cmpbi(C, BX0); J('JE', 'gb_on'); a.cmpbi(C, BX1); J('JE', 'gb_on')
+    a.cmpb(Z + 1, C); J('JC', 'gb_on'); a.sjmp('gb_n')
+    a.L('gb_p'); a.cmpbi(T, 3); J('JE', 'gb_on')       # pan: the track, the centre tick, the marker
+    a.cmpbi(C, (BX0 + BX1) // 2); J('JNE', 'gb_m'); a.cmpbi(T, 1); J('JNC', 'gb_m'); a.cmpbi(T, 6); J('JNC', 'gb_on')
+    a.L('gb_m'); a.ldb(IDX, Z + 1); a.decb(IDX); a.cmpb(C, IDX); J('JNC', 'gb_n')
+    a.addbi(IDX, 2); a.cmpb(IDX, C); J('JC', 'gb_on'); a.sjmp('gb_n')
+    a.L('gb_on'); a.orb(X, P)
+    a.L('gb_n'); a.incb(C); a.shrb(P, 1); a.djnz(P + 1, 'gb1')
+    a.L('gb_r'); a.ret()
     a.L('g_zone')                                        # zone bar bits for byte column V in text row U
     a.ldbze(IDX, U); a.subi(IDX, 2); a.ldb_lidx(Z, IDX, ZL); a.ldb_lidx(Z + 1, IDX, ZH)
     a.ldb(C, V); a.ldbi(C + 1, 6); a.b(0x5C, C + 1, C, C)   # MULUB C, C, C+1 -> C = column * 6 (word)
@@ -685,6 +773,37 @@ def emit(a):
     a.L('dump')
     a.ldbi(T, 7); sta(ROW, T); a.lcall('tclr'); a.ldi_l(Q, 's_sending'); a.ldbi(T, 1); a.lcall('put')
     a.lcall('tpush')
+    a.ldi_l(R1A, 'dump_send'); a.lcall(P4); a.ret()     # the sending runs from ROM page 4 (emit_p4)
+
+    # ================= LCD =================
+    a.L('wst'); a.ldb_abs(ST, LCD_C); a.andbi(ST, 3); a.cmpbi(ST, 3); J('JNE', 'wst'); a.ret()
+    a.L('wauto'); a.ldb_abs(ST, LCD_C); a.jbc(ST, 3, 'wauto'); a.ret()
+    a.L('cmd'); a.lcall('wst'); a.stb_abs(LCD_C, X); a.ret()
+    a.L('dat'); a.lcall('wst'); a.stb_abs(LCD_D, X); a.ret()
+    a.L('setaddr'); a.ldb(X, W); a.lcall('dat'); a.ldb(X, W + 1); a.lcall('dat'); a.ldbi(X, 0x24); a.sjmp('cmd')
+    emit_wave(a, J, lda, sta, ldw, stw)
+    emit_wavesel(a, J, lda, sta, ldw, stw, stock)
+
+
+def emit_p4(a):
+    """TOOLS > DUMP IC6, the sending part: ROM page 4 (reached through the page-4 stub; IC6_RD puts R54 = 4
+    back in the window). 256 SysEx blocks F0 7D 49 hi lo <128 bytes as nibbles> F7, 0.4 ms per byte."""
+    J = a.jcc
+    def lda(r, addr): a.ldb_abs(r, addr)
+    def sta(addr, r): a.stb_abs(addr, r)
+    def ldw(r, addr): a.ld_lidx(r, 0, addr)
+    def stw(addr, r): a.st_lidx(0, addr, r)
+    def far(label): a.ldi_l(R1A, label); a.lcall(0x105F)
+    emit_wave_view(a, J, lda, sta, ldw, stw, far)
+    # stock key read, filtered: stock acts on a key in the same pass it scans it, so PCM CARD (menu closed) is
+    # taken here, before any stock screen sees it; rt_ui opens the wave page on its next pass
+    a.L('gk_hook'); a.lcall(GK_STOCK); J('JNC', 'gk_r')
+    a.cmpbi(T, K_CARDB); J('JNE', 'gk_s')
+    lda(IDX, M_ON); a.cmpbi(IDX, 0); J('JNE', 'gk_s')
+    a.ldbi(IDX, 1); sta(CARDQ, IDX); a.b(0xF8); a.ret()   # CLRC: no key for stock
+    a.L('gk_s'); a.b(0xF9)                               # SETC: the key, as stock returned it
+    a.L('gk_r'); a.ret()
+    a.L('dump_send')
     a.clrb(T); sta(I, T)                                 # I = block 0..255 (128 bytes each)
     a.L('db')
     for v in (0xF0, 0x7D, 0x49): a.ldbi(X, v); a.lcall('tx')
@@ -701,57 +820,52 @@ def emit(a):
     a.L('tx'); a.b(0xC4, SBUF_, X); a.ld(C, TIMER1_)    # 0.4 ms per byte (31250 baud = 0.32 ms)
     a.L('txw'); a.ld(P, TIMER1_); a.sub(P, C); a.cmpi(P, 300); J('JNC', 'txw'); a.ret()
 
-    # ================= LCD =================
-    a.L('wst'); a.ldb_abs(ST, LCD_C); a.andbi(ST, 3); a.cmpbi(ST, 3); J('JNE', 'wst'); a.ret()
-    a.L('wauto'); a.ldb_abs(ST, LCD_C); a.jbc(ST, 3, 'wauto'); a.ret()
-    a.L('cmd'); a.lcall('wst'); a.stb_abs(LCD_C, X); a.ret()
-    a.L('dat'); a.lcall('wst'); a.stb_abs(LCD_D, X); a.ret()
-    a.L('setaddr'); a.ldb(X, W); a.lcall('dat'); a.ldb(X, W + 1); a.lcall('dat'); a.ldbi(X, 0x24); a.sjmp('cmd')
-    emit_wave(a, J, lda, sta, ldw, stw)
-    emit_wavesel(a, J, lda, sta, ldw, stw, stock)
-
 
 # ================= data: page tables, items and strings, packed into the freed page-7 blocks =================
 DATA_SEGS = [(0xAD4E, 0xB289), (0xBA0A, 0xBCA6), (0xBF23, 0xBFFF),   # page 7, inclusive (cuts.py)
-             (END + 1, 0x9C47)]                                     # + the top of the code block
+             (END + 1, 0x9C47),                                     # + the top of the code block
+             (0x18F0, 0x1991), (0x72EF, 0x73B1), (0x75B0, 0x7613)]  # freed fixed ROM: readable from any page
 
 
 def s_(d, name, text): d.L(name); d.data(bytes(text, 'ascii') + bytes([0xFF]))
 
 
+class _Probe:
+    """stands in for an Asm while the string pool is collected"""
+    def __getattr__(self, name): return lambda *a, **k: None
+
+
 def chunks():
-    """data in pieces that can each go to any segment (every piece starts word aligned)"""
-    out = []
+    """data in pieces that can each go to any segment (every piece starts word aligned). Every text (titles,
+    heads, item labels, list words) is stored once in a shared pool: pages point at the pooled copy."""
+    out, pool = [], {}
+
+    def S(text):                                        # label of the pooled copy of text
+        if text not in pool: pool[text] = 'sx_%d' % len(pool)
+        return pool[text]
 
     def pagetab(d):
         d.L('pages')
         for key, title, kind, h0, h1, i0, i1 in PAGES:
             n0 = len(LIST_PAGES[key]) if kind == K_ROOT else len(i0)
             par = 0xFF if PARENT[key] is None else PIDX[PARENT[key]]
-            d.dw('t_' + key); d.data([kind, n0, len(i1), par]); d.dw('h0_' + key); d.dw('h1_' + key)
+            d.dw(S(title)); d.data([kind, n0, len(i1), par]); d.dw(S(h0)); d.dw(S(h1))
             d.dw('i0_' + key); d.dw('i1_' + key); d.data([0, 0])
     out.append(pagetab)
     for key, title, kind, h0, h1, i0, i1 in PAGES:
-        def page(d, key=key, title=title, kind=kind, h0=h0, h1=h1, i0=i0, i1=i1):
+        def page(d, key=key, kind=kind, i0=i0, i1=i1):
             if kind == K_ROOT:
                 d.L('i0_' + key); d.L('i1_' + key)
                 for n, (lab, k_, arg) in enumerate(LIST_PAGES[key]):
-                    d.dw('ll_%s_%d' % (key, n))
+                    d.dw(S(lab))
                     d.data([k_, PIDX[arg] if k_ == LI_LINK else (arg if k_ == LI_ACT else 0)])
-                    d.dw('li_%s_%d' % (key, n) if k_ == LI_INFO else 0); d.dw(0)
+                    d.dw(S(arg) if k_ == LI_INFO else 0); d.dw(0)
             else:
                 for col, items in ((0, i0), (1, i1)):
                     d.align(); d.L('i%d_%s' % (col, key))
                     for n, (lab, area, off, typ, mn, mx, aux) in enumerate(items):
-                        d.dw('lb_%s_%d_%d' % (key, col, n)); d.data([area, off, typ, mn, mx, aux])
-            s_(d, 't_' + key, title); s_(d, 'h0_' + key, h0); s_(d, 'h1_' + key, h1)
-            if kind == K_ROOT:
-                for n, (lab, k_, arg) in enumerate(LIST_PAGES[key]):
-                    s_(d, 'll_%s_%d' % (key, n), lab)
-                    if k_ == LI_INFO: s_(d, 'li_%s_%d' % (key, n), arg)
-            else:
-                for col, items in ((0, i0), (1, i1)):
-                    for n, it_ in enumerate(items): s_(d, 'lb_%s_%d_%d' % (key, col, n), it_[0])
+                        if isinstance(aux, str): aux = PIDX[aux]          # T_LINK: target page
+                        d.dw(S(lab)); d.data([area, off, typ, mn, mx, aux])
         out.append(page)
 
     def listtab(d):
@@ -759,25 +873,27 @@ def chunks():
         for k in LISTS: d.dw('lt_' + k)
     out.append(listtab)
     for k, names in LISTS.items():
-        def lst(d, k=k, names=names):
+        def lst(d, names=names, k=k):
             d.L('lt_' + k)
-            for n in range(len(names)): d.dw('ls_%s_%d' % (k, n))
-            for n, nm in enumerate(names): s_(d, 'ls_%s_%d' % (k, n), nm)
+            for nm in names: d.dw(S(nm))
         out.append(lst)
 
     def misc(d):
         d.L('sec_names')
-        for n in ('L1', 'L2', 'U3', 'U4'): d.dw('sn_' + n)
-        for n in ('L1', 'L2', 'U3', 'U4'): s_(d, 'sn_' + n, n)
+        for n in ('L1', 'L2', 'U3', 'U4'): d.dw(S(n))
         d.L('notes'); d.data(b'C C#D D#E F F#G G#A A#B ')
     out.append(misc)
+    for fn in list(out): fn(_Probe())                    # fill the pool (labels only, no output)
+    texts = list(pool.items())
+    for g in range(0, len(texts), 8):
+        out.append(lambda d, grp=texts[g:g + 8]: [s_(d, lb, t) for t, lb in grp])
     for name, text in STRINGS:
         out.append(lambda d, name=name, text=text: s_(d, name, text))
     return out
 
 
 STRINGS = [('s_all', 'ALL LAYERS'), ('s_chips', 'L1 L2 U3 U4'), ('s_ver', 'V0.6'),
-           ('s_sending', 'SENDING IC6 ... ABOUT 30 S'), ('s_gt', '>'), ('s_lhead', 'SEC TONE      ZONE'),
+           ('s_sending', 'SENDING IC6 ... ABOUT 30 S'), ('s_gt', '>'), ('s_lhead', 'SEC WAVE      ZONE'),
            ('s_lvl', 'LVL'), ('s_off', 'OFF'), ('s_mode', 'MODE'), ('s_split', 'SPLIT')]
 
 
@@ -823,11 +939,15 @@ WX0, WY0, WH = 120, 18, 44     # view: x 120..238, y 18..61 (row 1 = 8..15 holds
 
 def emit_wave(a, J, lda, sta, ldw, stw):
     a.L('tread'); sta(IOFF, T); a.ldbi(T, A_TONE); sta(IAREA, T); a.lcall('item_read'); lda(T, VAL); a.ret()
+
+
+def emit_wave_view(a, J, lda, sta, ldw, stw, far):
+    """the DLM loop view, ROM page 4 (far = call into page 7 through the 0x105F stub)"""
     a.L('wave_view')
     lda(T, SEC); a.cmpbi(T, 4); J('JNE', 'wv0'); a.clrb(T)
     a.L('wv0'); sta(SECW, T)
     for off, var in ((0x0D, V_P), (0x0E, V_P + 1), (0x0F, V_P + 2), (0x0A, V_P + 3), (0x0B, V_P + 4)):
-        a.ldbi(T, off); a.lcall('tread'); sta(var, T)
+        a.ldbi(T, off); far('tread'); sta(var, T)
     lda(T, V_P + 3); lda(U, V_P + 4); a.lcall(WSEL); J('JNC', 'wv1'); a.ret()       # no such wave
     a.L('wv1'); sta(V_HI + 1, T)                          # select -> high byte of the address word
     lda(V, V_P); a.cmpbi(V, 0); J('JNE', 'wv_b')
@@ -866,7 +986,7 @@ def emit_wave(a, J, lda, sta, ldw, stw):
     a.L('wv13'); stw(V_ACC, Q); a.decb(C); J('JNE', 'wv_byte')
     a.ldi(W, 2047); a.sub(W, Q); a.shr(W, 6); a.ldbi(U, WH); a.b(0x7C, U, W); a.shr(W, 6)   # y = WY0 + (2047-acc)/64*WH/64
     a.addi(W, WY0); ldw(P, LX1); stw(LX0, P); a.inc(P); stw(LX1, P)
-    ldw(P, LY1); stw(LY0, P); stw(LY1, W); a.lcall('seg')
+    ldw(P, LY1); stw(LY0, P); stw(LY1, W); far('seg')
     lda(T, V_COL); a.incb(T); sta(V_COL, T); a.cmpbi(T, 119); J('JNE', 'wv_col')
     a.ret()
 
@@ -926,8 +1046,9 @@ def emit_wavesel(a, J, lda, sta, ldw, stw, stock):
     a.cmpbi(T, 0x40); J('JNC', 'iw1'); a.subbi(T, 0x3F); a.sjmp('iw2')
     a.L('iw1'); a.ldbi(U, ord('C'))
     a.L('iw2'); a.stb_pi(P, U); a.lcall('udec'); a.ldbi(U, ord('-')); a.stb_pi(P, U); stw(W_PTR, P)
-    a.ldbi(T, 0x0B); a.lcall('tread'); a.incb(T); ldw(P, W_PTR); a.lcall('udec'); a.ljmp('fend')
-    a.L('iv_wname')                                      # the wave's name, from the tone record (+0x37)
-    a.ldbze(W, R5F); a.shl(W, 2); lda(T, SECW); a.ldbze(IDX, T); a.add(W, IDX)
-    a.b(0x6D, 0x60, 0x00, W); a.addi(W, TONE_RAM + 0x37); a.ldi(P, NB); a.ldbi(C, 10)
+    a.ldbi(T, 0x0B); a.lcall('tread'); a.incb(T); ldw(P, W_PTR); a.lcall('udec')
+    a.ldbi(U, 0x20); a.stb_pi(P, U); stw(W_PTR, P); a.sjmp('iwn0')    # + a space and the wave's name
+    a.L('iv_wname'); a.ldi(P, NB); stw(W_PTR, P)        # the wave's name, from the tone record (+0x37)
+    a.L('iwn0'); a.ldbze(W, R5F); a.shl(W, 2); lda(T, SECW); a.ldbze(IDX, T); a.add(W, IDX)
+    a.b(0x6D, 0x60, 0x00, W); a.addi(W, TONE_RAM + 0x37); ldw(P, W_PTR); a.ldbi(C, 10)   # MULU hits P: reload
     a.L('iwn'); a.ldb_pi(T, W); a.stb_pi(P, T); a.decb(C); J('JNE', 'iwn'); a.ljmp('fend')

@@ -73,13 +73,14 @@ def apply(img):
 # by STB R56 ; LCALL 52ED ; LJMP 34F4), display record (page 5 0xAC46 -> R59 screen descriptor + R57). Descriptors:
 # page 4 pointer table 0x8064 (R59 0x00-0x37), display lists with the text inline, 0x80D4-0x9C33.
 # Cut: tone edit 0x36-0x3A, rhythm edit 0x3B-0x3F, D.Xfer 0x41-0x44, MIDI OUT / palette / effector 0x2D-0x2F,
-# MIDI CTRL map 0x1C-0x1E 0x2C 0x4A 0x4B, MIDI OUT play displays 0x14-0x1B, reverb / chorus 0x1F-0x20.
+# MIDI CTRL map 0x1C-0x1E 0x2C 0x4A 0x4B, MIDI OUT play displays 0x14-0x1B, reverb / chorus 0x1F-0x20,
+# the old tone picker 0x13 (+ UI mode 0x0E), Orig. Tone (PCM) Play 0x46.
 # Each gets screen 01's routines + display (so any stock path into one is harmless), and the Rosetta menu's main
 # pass (synth.REDIRECT) moves R56 back to 01 and opens the matching Rosetta page. UI modes 0x0F-0x1B (stock's
 # EFFECT/CTRL and MIDI OUT buttons, which Rosetta takes first) get mode 00's display record.
-CUT_R56 = (list(range(0x14, 0x21)) + [0x2C, 0x2D, 0x2E, 0x2F] + list(range(0x36, 0x40)) + list(range(0x41, 0x45))
+CUT_R56 = ([0x13, 0x46] + list(range(0x14, 0x21)) + [0x2C, 0x2D, 0x2E, 0x2F] + list(range(0x36, 0x40)) + list(range(0x41, 0x45))
            + [0x47, 0x4A, 0x4B])
-CUT_R5A = list(range(0x0F, 0x1C))
+CUT_R5A = list(range(0x0E, 0x1C))       # 0x0E: the old tone picker (COMMAND on edit screens)
 STEP_T, ENTER_T, DISP_T, MODE_T, DESC_T = 0x345A, 0x3502, 0xAC46, 0xB0D6, 0x8064   # DISP / MODE page 5, DESC page 4
 N_R56, N_R5A, N_DESC = 0x4D, 0x20, 0x38
 

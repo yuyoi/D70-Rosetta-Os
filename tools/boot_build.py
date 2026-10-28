@@ -138,20 +138,28 @@ def main():
     SY.IC6_RD = TRAMP + 21                               # fixed helper after the three trampolines
     dsegs, dlabels = SY.build_data()                    # SYNTH tables + strings -> the freed page-7 blocks
     for org, blob in dsegs:
-        f = 7 * 0x4000 + org - 0x8000
-        assert set(img[f:f + len(blob)]) == {0xFF}, 'data block %04X not free' % org
+        f = org if org < 0x8000 else 7 * 0x4000 + org - 0x8000       # fixed ROM blocks or page 7
+        assert not blob or set(img[f:f + len(blob)]) == {0xFF}, 'data block %04X not free' % org
         img[f:f + len(blob)] = blob
     fx = Asm(AR.TICK_ORG); fx.ext = {}; AR.emit_tick(fx); fxcode = fx.assemble()   # ARP clock: freed fixed ROM
     assert AR.TICK_ORG + len(fxcode) <= AR.TICK_END + 1, 'ARP clock does not fit (%d B)' % len(fxcode)
     assert set(img[AR.TICK_ORG:AR.TICK_ORG + len(fxcode)]) == {0xFF}
     img[AR.TICK_ORG:AR.TICK_ORG + len(fxcode)] = fxcode
-    p4 = Asm(AR.IN_ORG); p4.ext = {}; AR.emit_in(p4); p4code = p4.assemble()     # ARP key in: page 4 free tail
+    from collections import defaultdict                  # pages 4 and 7 call each other: sizes first, then labels
+    p4 = Asm(AR.IN_ORG); p4.ext = defaultdict(int); AR.emit_in(p4); SY.emit_p4(p4); p4.assemble()
+    p4_first = dict(p4.labels)
     f4 = 4 * 0x4000 + AR.IN_ORG - 0x8000
-    assert AR.IN_ORG + len(p4code) <= AR.IN_END + 1, 'ARP key in does not fit (%d B)' % len(p4code)
+    p7 = Asm(SY.ORG); p7.ext = dict(dlabels, **fx.labels, **p4.labels); SL.emit(p7); SY.emit(p7)
+    p7code = p7.assemble()
+    p4 = Asm(AR.IN_ORG); p4.ext = dict(dlabels, **p7.labels); AR.emit_in(p4); SY.emit_p4(p4); p4code = p4.assemble()
+    assert p4.labels == p4_first, 'page 4 labels moved between passes'
+    assert AR.IN_ORG + len(p4code) <= AR.IN_END + 1, 'page 4 code does not fit (%d B)' % len(p4code)
     assert set(img[f4:f4 + len(p4code)]) == {0xFF}
     img[f4:f4 + len(p4code)] = p4code
-    p7 = Asm(SY.ORG); p7.ext = dict(dlabels, **fx.labels); SL.emit(p7); SY.emit(p7)
-    p7code = p7.assemble(); p7.labels.update(fx.labels); p7.labels.update(p4.labels)
+    jt = 4 * 0x4000 + 0x8006 - 0x8000                   # page 4 jump table: key read -> gk_hook (PCM CARD filter)
+    assert img[jt:jt + 3] == bytes([0xE7]) + ((SY.GK_STOCK - 0x8009) & 0xFFFF).to_bytes(2, 'little')
+    img[jt + 1:jt + 3] = ((p4.labels['gk_hook'] - 0x8009) & 0xFFFF).to_bytes(2, 'little')
+    p7.labels.update(fx.labels); p7.labels.update(p4.labels)
     f7 = 7 * 0x4000 + SY.ORG - 0x8000
     assert SY.ORG + len(p7code) <= SY.END + 1, 'page 7 code does not fit (%d B)' % len(p7code)
     assert set(img[f7:f7 + len(p7code)]) == {0xFF}
@@ -386,6 +394,8 @@ def synth_check(img, p7, ui):
             else: sm.c = False
         elif sm.rw(0x1A) == SY.DIAL:
             sm.reg[0x1C] = dialq.pop(0) & 255 if dialq else 0
+        elif sm.rw(0x1A) in (p7.labels['dump_send'], p7.labels['wave_view']):
+            return False                                # our own page-4 code: the real stub runs it
         else:
             raise AssertionError('page 4 entry %04X' % sm.rw(0x1A))
         return True
@@ -454,22 +464,26 @@ def synth_check(img, p7, ui):
     step(user=True); step(SY.K_USER)                                   # open; the USER key event is ignored
     assert sim.lcd.homes.get(0x40) == SY.LCD_TEXT and sim.lcd.homes.get(0x42) == SY.LCD_GFX
     step(SY.K_ENT)                                                     # ROSETTA OS > SYNTH
-    step(SY.K_DN); step(SY.K_ENT)                                      # WAVE / ZONE
+    step(SY.K_ENT); step(SY.K_ENT)                                     # SOUND > LAYER (L1)
+    assert sim.ram[SY.PG - 0xC000] == SY.PIDX['wave']
     m0, n0_ = mem[0x0351 + 0x0A], mem[0x0351 + 0x0B]
-    step(SY.K_DN); step(SY.K_INC)                                      # WAVE: next wave, tone record rebuilt
+    step(SY.K_INC)                                                     # WAVE: next wave, tone record rebuilt
     assert writes[-2:] == [(0x0351 + 0x0A, m0), (0x0351 + 0x0B, n0_ + 1)] and fixes[-1] == 0, (writes[-2:], fixes)
     assert applies[-1] == len(writes)
     mem[0x0351 + 0x0A] = 0x40; mem[0x0351 + 0x0B] = 46; step(SY.K_INC)  # last wave of I1 -> I2 1
     assert writes[-2:] == [(0x0351 + 0x0A, 0x41), (0x0351 + 0x0B, 0)], writes[-2:]
     step(SY.K_DEC)                                                     # and back to I1 47
     assert writes[-2:] == [(0x0351 + 0x0A, 0x40), (0x0351 + 0x0B, 46)], writes[-2:]
-    step(SY.K_RT); step(SY.K_DN); step(SY.K_DEC)                       # ZONE column: SHIFT - 1
+    for _ in range(8): step(SY.K_DN, shot=False)                       # down to DLM: the list scrolls
+    assert sim.ram[SY.STOP - 0xC000] == 3, sim.ram[SY.STOP - 0xC000]
+    for _ in range(3): step(SY.K_UP, shot=False)                       # back up to SHIFT
+    step(SY.K_DEC)                                                     # SHIFT - 1
     assert writes[-1] == (0x019E + 0x23 + 0x02, 23), (writes[-3:], [hex(sim.ram[k - 0xC000]) for k in (SY.PG, SY.SEL, SY.COL, SY.SEC)])
     step(SY.K_F5); step(SY.K_F5); step(SY.K_F5); step(SY.K_F5)         # sections L2 U3 U4 ALL
     n0 = len(writes); step(SY.K_INC)                                   # ALL: one INC writes four sections
     assert [w[0] for w in writes[n0:]] == [0x019E + 0x23 + k * 0x0D + 0x02 for k in range(4)]
-    step(SY.K_EXIT)
-    for _ in range(5): step(SY.K_DN, shot=False)                       # WAVE -> down to AMP ENV
+    step(SY.K_EXIT); step(SY.K_EXIT)                                   # LAYER > SOUND > SYNTH
+    for _ in range(4): step(SY.K_DN, shot=False)                       # SOUND -> down to AMP ENV
     step(SY.K_DN); step(SY.K_ENT); step(SY.K_DN); step(SY.K_INC)       # AMP ENV, A LEVEL + 1
     step(SY.K_EXIT); step(SY.K_UP); step(SY.K_ENT)                     # AMP
     step(SY.K_EXIT); step(SY.K_UP); step(SY.K_UP); step(SY.K_ENT)      # FILTER
@@ -484,7 +498,10 @@ def synth_check(img, p7, ui):
         assert rd[:min(n, len(rd))] == [base + i for i in range(min(n, len(rd)))], (hex(base), [hex(x) for x in rd[:4]])
         if mode: assert ('smp', 3, 2) in wreads           # the sample under middle C (zone 2)
         wreads.clear()
-    step(SY.K_EXIT); step(SY.K_UP); wreads.clear(); step(SY.K_ENT); view_check()   # DLM, its view
+    step(SY.K_EXIT); step(SY.K_UP); step(SY.K_ENT); step(SY.K_ENT)     # SOUND > LAYER (section ALL)
+    for _ in range(8): step(SY.K_DN, shot=False)                       # DLM  >
+    wreads.clear(); step(SY.K_ENT); view_check()                       # the DLM page and its view
+    assert sim.ram[SY.PG - 0xC000] == SY.PIDX['dlm']
     mem[0x0351 + 0x0D] = 1; mem[0x0351 + 0x0E] = 5; mem[0x0351 + 0x0F] = 9; step(SY.K_UP); view_check()   # MODE B
     step(SY.K_DN); step(SY.K_DN); n0 = len(writes); step(SY.K_INC)     # START + 1 (section ALL: four layers)
     assert [w[0] for w in writes[n0:]] == [0x0351 + k * 0x3E + 0x0E for k in range(4)], writes[n0:]
@@ -503,17 +520,20 @@ def synth_check(img, p7, ui):
     n0 = len(writes); sim.ram[SY.SLD - 0xC000] = 127; step(shot=False)  # and back to B
     assert [w[1] for w in writes[n0:]] == [1] * 4, writes[n0:]
     step(SY.K_DN)
-    step(SY.K_EXIT)
-    for _ in range(4): step(SY.K_DN, shot=False)                       # DLM -> EFFECTS: 4 keys ...
+    step(SY.K_EXIT); step(SY.K_EXIT); step(SY.K_EXIT)                  # LOOP VIEW > LAYER > SOUND > SYNTH
+    for _ in range(4): step(SY.K_DN, shot=False)                       # SOUND -> EFFECTS: 4 keys ...
     dialq.append(3); step(shot=False)                                  # ... + 3 dial clicks
     step(SY.K_ENT); step(SY.K_RT); step(SY.K_DN); step(SY.K_INC)       # chorus LEVEL + 1
     assert writes[-1] == (0x00AD + 0xB3, 1) and fx and fx[-1] == len(writes), (writes[-4:], fx)
     step(SY.K_EXIT)
     for _ in range(9): step(SY.K_UP, shot=False)
-    step(SY.K_UP); step(SY.K_ENT); step(SY.K_DN); step(SY.K_INC)       # LAYERS, L2 level + 1
+    step(SY.K_UP); step(SY.K_ENT); step(SY.K_DN); step(SY.K_INC)       # SOUND, L2 level + 1
     assert writes[-1] == (0x019E + 0x23 + 1 * 0x0D + 0x01, 73)
     step(SY.K_EXIT); step(SY.K_EXIT)                                   # back to SYNTH, ROSETTA OS
-    step(SY.K_DN); step(SY.K_DN); step(SY.K_ENT); step(SY.K_EXIT)      # SETTINGS
+    step(SY.K_DN); step(SY.K_ENT)                                      # QUICK PLAY: the wave page
+    assert sim.ram[SY.PG - 0xC000] == SY.PIDX['wave']
+    step(SY.K_EXIT); step(SY.K_EXIT); step(SY.K_EXIT)                  # LAYER > SOUND > SYNTH > ROSETTA OS
+    step(SY.K_DN); step(SY.K_DN); step(SY.K_ENT); step(SY.K_EXIT)      # SETTINGS (back on QUICK PLAY)
     step(SY.K_DN); step(SY.K_ENT)                                      # ABOUT
     step(SY.K_EXIT); step(SY.K_UP); step(SY.K_UP); step(SY.K_ENT)      # TOOLS
     sim.reg[0x9C] = 0x00; sim.reg[0x9D] = 0x14; sim.reg[0xA0] = 0; sim.reg[0xA1] = 0; sim.reg[0xA2] = 0x0C
@@ -542,10 +562,32 @@ def synth_check(img, p7, ui):
     sim.ram[SY.KEYMAP_FX[0] - 0xC000] = SY.KEYMAP_FX[1]; step(shot=False)    # EFFECT/CTRL with the menu closed
     assert sim.ram[SY.M_ON - 0xC000] == 1 and sim.ram[SY.PG - 0xC000] == SY.PIDX['fx']
     sim.ram[SY.KEYMAP_FX[0] - 0xC000] = 0
-    for r56, pg in ((0x37, 'synth'), (0x2F, 'fx'), (0x42, 'tools'), (0x1D, 'midi')):   # stock enters a cut screen
+    sim.ram[SY.M_ON - 0xC000] = 0; sim.ram[SY.UPREV - 0xC000] = 0; step(shot=False)
+    # PCM CARD: the filtered key read (page 4 0x8006 -> gk_hook) keeps it from stock while the menu is closed
+    gkq = []
+    def gk_fake(sm):
+        if gkq: sm.reg[0x1C] = gkq.pop(0); sm.c = True
+        else: sm.c = False
+        return True
+    sim.hooks[SY.GK_STOCK] = gk_fake; bank0 = sim.bank; sim.bank = 4
+    assert sim.rb(0x8006) == 0xE7 and (0x8009 + sim.rw(0x8007)) & 0xFFFF == p7.labels['gk_hook']
+    for key, menu, took in ((SY.K_CARDB, 0, True), (SY.K_CARDB, 1, False), (SY.K_UP, 0, False), (None, 0, False)):
+        sim.ram[SY.M_ON - 0xC000] = menu; sim.ram[SY.CARDQ - 0xC000] = 0
+        if key is not None: gkq.append(key)
+        sim.run(p7.labels['gk_hook'])
+        assert sim.c == (key is not None and not took) and sim.ram[SY.CARDQ - 0xC000] == took, (key, menu)
+        if sim.c: assert sim.reg[0x1C] == key
+    del sim.hooks[SY.GK_STOCK]; sim.bank = bank0
+    sim.ram[SY.M_ON - 0xC000] = 0; sim.ram[SY.CARDQ - 0xC000] = 1; n = len(calls); step(shot=False)
+    assert sim.ram[SY.M_ON - 0xC000] == 1 and sim.ram[SY.PG - 0xC000] == SY.PIDX['wave'] and calls[n:] == []
+    assert sim.ram[SY.CARDQ - 0xC000] == 0
+    for r56, pg in ((0x37, 'synth'), (0x2F, 'fx'), (0x42, 'tools'), (0x1D, 'midi'), (0x13, 'layers'), (0x46, 'wave')):
         sim.ram[SY.M_ON - 0xC000] = 0; sim.reg[SY.R5A_] = 0; sim.reg[SY.R56_] = r56; n = len(calls); step(shot=False)
         assert sim.reg[SY.R56_] == 1 and calls[n:] == ['off', 'enter'], (hex(r56), calls[n:])
         assert sim.ram[SY.M_ON - 0xC000] == 1 and sim.ram[SY.PG - 0xC000] == SY.PIDX[pg], hex(r56)
+    sim.ram[SY.M_ON - 0xC000] = 0; sim.reg[SY.R56_] = 0x28; sim.reg[SY.R5A_] = 0x0E; n = len(calls); step(shot=False)
+    assert sim.reg[SY.R5A_] == 0 and sim.reg[SY.R56_] == 1 and calls[n:] == ['off', 'enter'], 'old tone picker mode'
+    assert sim.ram[SY.M_ON - 0xC000] == 1 and sim.ram[SY.PG - 0xC000] == SY.PIDX['layers']
     sim.ram[SY.M_ON - 0xC000] = 0; sim.reg[SY.R56_] = 0x36; sim.reg[SY.R5A_] = 3; n = len(calls); step(shot=False)
     assert calls[n:] == ['ui'] and sim.ram[SY.M_ON - 0xC000] == 0, 'edit modes are left alone'
     sim.reg[SY.R56_] = 1; sim.reg[SY.R5A_] = 0                          # KNOB LOCK: menu closed, slider 1 still
