@@ -19,6 +19,7 @@ import menu as MN
 import sliders as SL
 import synth as SY
 import arp as AR
+import dsplab as DL
 from asm import Asm
 import cuts
 import font57
@@ -149,7 +150,12 @@ def main():
     p4 = Asm(AR.IN_ORG); p4.ext = defaultdict(int); AR.emit_in(p4); SY.emit_p4(p4); p4.assemble()
     p4_first = dict(p4.labels)
     f4 = 4 * 0x4000 + AR.IN_ORG - 0x8000
-    p7 = Asm(SY.ORG); p7.ext = dict(dlabels, **fx.labels, **p4.labels); SL.emit(p7); SY.emit(p7)
+    def pk_emit(ext):                                    # DSP PEEK helpers: freed fixed ROM (page 7 is full)
+        pk = Asm(SY.PEEK_ORG); pk.ext = ext
+        SY.emit_peek_fixed(pk, pk.jcc, lambda r, x: pk.ldb_abs(r, x), lambda x, r: pk.stb_abs(x, r))
+        return pk, pk.assemble()
+    pk, _ = pk_emit(defaultdict(int))
+    p7 = Asm(SY.ORG); p7.ext = dict(dlabels, **fx.labels, **p4.labels, **pk.labels); SL.emit(p7); SY.emit(p7)
     p7code = p7.assemble()
     p4 = Asm(AR.IN_ORG); p4.ext = dict(dlabels, **p7.labels); AR.emit_in(p4); SY.emit_p4(p4); p4code = p4.assemble()
     assert p4.labels == p4_first, 'page 4 labels moved between passes'
@@ -160,6 +166,23 @@ def main():
     assert img[jt:jt + 3] == bytes([0xE7]) + ((SY.GK_STOCK - 0x8009) & 0xFFFF).to_bytes(2, 'little')
     img[jt + 1:jt + 3] = ((p4.labels['gk_hook'] - 0x8009) & 0xFFFF).to_bytes(2, 'little')
     p7.labels.update(fx.labels); p7.labels.update(p4.labels)
+    pk_first = dict(pk.labels); pk, pkcode = pk_emit(dict(dlabels, **p7.labels))
+    assert pk.labels == pk_first, 'PEEK labels moved between passes'
+    assert SY.PEEK_ORG + len(pkcode) <= SY.PEEK_END + 1, 'PEEK helpers do not fit (%d B)' % len(pkcode)
+    assert set(img[SY.PEEK_ORG:SY.PEEK_ORG + len(pkcode)]) == {0xFF}
+    img[SY.PEEK_ORG:SY.PEEK_ORG + len(pkcode)] = pkcode
+    p7.labels.update(pk.labels)
+    print('DSP PEEK helpers %04X-%04X (%d B)' % (SY.PEEK_ORG, SY.PEEK_ORG + len(pkcode) - 1, len(pkcode)))
+    # DSP LAB: our SysEx (F0 7D 4C ...) caught in the MIDI get-byte jump entry, handled on page 2
+    dl_segs, dl_labels = DL.build({})
+    for org, blob in dl_segs:
+        f = org if org < 0x8000 else 2 * 0x4000 + org - 0x8000
+        assert set(img[f:f + len(blob)]) == {0xFF}, 'DSP LAB block %04X not free' % org
+        img[f:f + len(blob)] = blob
+    assert bytes(img[DL.JT_GET:DL.JT_GET + 3]) == DL.JT_GET_OLD
+    rel = (dl_labels['lab_get'] - (DL.JT_GET + 3)) & 0xFFFF
+    img[DL.JT_GET + 1:DL.JT_GET + 3] = rel.to_bytes(2, 'little')
+    print('DSP LAB get %04X (%d B), do page 2 %04X (%d B)' % (dl_segs[0][0], len(dl_segs[0][1]), dl_segs[1][0], len(dl_segs[1][1])))
     f7 = 7 * 0x4000 + SY.ORG - 0x8000
     assert SY.ORG + len(p7code) <= SY.END + 1, 'page 7 code does not fit (%d B)' % len(p7code)
     assert set(img[f7:f7 + len(p7code)]) == {0xFF}
@@ -207,6 +230,7 @@ def main():
     for r in range(0x1C, 0x30): pass
     assert sim.frames == frames, 'frame mismatch: %d frames shown, first bad %s' % (
         len(sim.frames), next((i for i, (x, y) in enumerate(zip(sim.frames, frames)) if x != y), None))
+    ram0 = bytearray(ram0); ram0[DL.LS_STATE - 0xC000] = 0             # the player clears the DSP LAB SysEx state
     assert sim.ram[:0x3E00] == ram0[:0x3E00], 'RAM1 not restored'       # 0xFE00-0xFFFF = sim stack
     assert bytes(sim.reg[0x30:0x4C]) == reg0[0x30:0x4C] and sim.reg[0x54] == 0x02, 'registers changed'
     assert sim.reg[0x09] == 0 and sim.bank == 0x02, 'hook instruction / bank not restored'
@@ -217,9 +241,9 @@ def main():
     assert dump_check(bytes(img), masm), 'IC6 dump does not match'
 
     os.makedirs(OUT, exist_ok=True)
-    save_tour(tour, os.path.join(OUT, 'D70_rosetta_v06_menu_tour.png'))
-    save_tour(synth_shots, os.path.join(OUT, 'D70_rosetta_v06_synth_tour.png'))
-    name = 'D70_rosetta_v06'
+    save_tour(tour, os.path.join(OUT, 'D70_rosetta_v08_menu_tour.png'))
+    save_tour(synth_shots, os.path.join(OUT, 'D70_rosetta_v08_synth_tour.png'))
+    name = 'D70_rosetta_v08'
     ev, od = bytes(img[0::2]), bytes(img[1::2])
     for suf, data in (('IC4_even', ev), ('IC9_odd', od), ('combined', bytes(img))):
         open(os.path.join(OUT, '%s_%s.bin' % (name, suf)), 'wb').write(data)

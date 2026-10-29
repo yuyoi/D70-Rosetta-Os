@@ -65,6 +65,7 @@ def build():
     a.ldi(AD, GAP); a.lcall('setaddr'); a.ldi(L, SGB); a.lcall('aw_zero')
     a.ldb(X, RA2); a.orbi(X, 0x90); a.lcall('cmd')
     a.L('out')
+    a.clrb(T); a.stb_abs(0xC6A2, T)                    # dsplab.LS_STATE: no SysEx in progress (RAM is not cleared)
     a.ldb_abs(T, KEY_EXIT); a.jbs(T, 7, 'stock')      # [EXIT] held at power-on: plain D-70, no menu
     a.ldbi(T, 2); a.stb_abs(MENU_ON, T)                # the SYNTH engine opens the Rosetta menu on its first pass
     a.L('stock')

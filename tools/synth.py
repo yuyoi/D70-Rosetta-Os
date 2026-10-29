@@ -92,7 +92,12 @@ MOUT_BASE = 0x00AD + 0xD5      # A_MOUT: performance MIDI OUT section s at MOUT_
 FX_LAST = 0xB7                 # PERF offsets 0xAD..0xB7 are the effects (reload the chip after a write)
 RAM_BASE = 0xC600              # A_RAM items: settings in RAM (arp.py), offset = item offset
 T_NUM, T_PLUS1, T_LIST, T_NOTE, T_MEDIA, T_NAME, T_WAVE, T_WNAME, T_LINK = 0, 1, 2, 3, 4, 5, 6, 7, 8   # LINK: aux = page
-K_ROOT, K_SPLIT, K_ENV, K_LAYERS, K_LIST = 0, 1, 2, 3, 4   # LIST: one scrolling column
+K_ROOT, K_SPLIT, K_ENV, K_LAYERS, K_LIST, K_PEEK = 0, 1, 2, 3, 4, 5   # LIST: one scrolling column; PEEK: DSP cells
+# DSP PEEK (TOOLS): the effects chip's 32 RAM A cells, read back live (STB 0A08 <- cell, LDB 0A00-0A02; the stock
+# firmware never reads them, the readback is from the RCC model rccBus.cpp). PEAK = highest bit used since ENTER.
+RCC_RD, RCC_D0 = 0x0A08, 0x0A00
+PK_PEAK, PK_MODE, PK_INIT = 0xC680, 0xC6A0, 0xC6A1  # 32 peaks (bits 0-23), 0 PEAK / 1 LIVE, A5 = peaks cleared
+PK_ROUNDS = 8                  # reads of all 32 cells per menu pass, for the peaks
 
 LISTS = {'offon': ['OFF', 'ON'], 'tvf': ['LPF', 'BPF', 'HPF', 'BYPASS'], 'lfo': ['TRI', 'SINE', 'SQUARE', 'SAW', 'RANDOM'],
          'ofs': ['-100%', '-50%', '0', '+50%', '+100%'], 'out': ['DRY', 'REVERB', 'CHORUS', 'DIRECT'],
@@ -180,6 +185,7 @@ PAGES = [  # (key, title, kind, head0, head1, items0, items1); list pages take t
      [it('MIDI', A_MOUT, 6, T_LIST, 0, 1, L('offon')), it('CHANNEL', A_MOUT, 0, T_PLUS1, 0, 15),
       it('PROGRAM', A_MOUT, 2, T_PLUS1, 0, 127), it('VOLUME', A_MOUT, 1, T_NUM, 0, 127),
       it('XPOSE', A_MOUT, 3, T_NUM, 0, 48, 24)]),
+    ('peek', 'DSP PEEK', K_PEEK, '', '', [], []),       # TOOLS: effects chip cells, live
 ]
 SYNTH_ITEMS = ['layers', 'pitch', 'filter', 'fenv', 'amp', 'aenv', 'lfo', 'fx', 'arp', 'midi']
 ROOT_LABELS = {'layers': 'SOUND', 'pitch': 'PITCH', 'filter': 'FILTER',
@@ -193,13 +199,13 @@ LIST_PAGES = {   # list page -> items (label, kind, arg); arg = page key, action
                 ('ABOUT', LI_LINK, 'about'),
                 ('EXIT TO D-70', LI_ACT, ACT_CLOSE)],
     'synth': [(ROOT_LABELS[k], LI_LINK, k) for k in SYNTH_ITEMS],
-    'tools': [('DUMP IC6 OVER MIDI', LI_ACT, ACT_DUMP)],
-    'about': [('OS', LI_INFO, 'ROSETTA 0.6'), ('BY', LI_INFO, 'JSW + CLAUDE'), ('MASCOT', LI_INFO, 'HEX GIRL'),
+    'tools': [('DUMP IC6 OVER MIDI', LI_ACT, ACT_DUMP), ('DSP PEEK', LI_LINK, 'peek')],
+    'about': [('OS', LI_INFO, 'ROSETTA 0.8'), ('BY', LI_INFO, 'JSW + CLAUDE'), ('MASCOT', LI_INFO, 'HEX GIRL'),
               ('BASE', LI_INFO, 'ROLAND D-70 1.11'), ('OLD D-70', LI_INFO, 'HOLD EXIT AT POWER ON')],
 }
 PARENT = {'rosetta': None, 'synth': 'rosetta', 'tools': 'rosetta', 'settings': 'rosetta', 'about': 'rosetta'}
 PARENT.update({k: 'synth' for k in SYNTH_ITEMS})
-PARENT.update({'wave': 'layers', 'dlm': 'wave'})   # SOUND > LAYER > LOOP VIEW
+PARENT.update({'wave': 'layers', 'dlm': 'wave', 'peek': 'tools'})   # SOUND > LAYER > LOOP VIEW
 RSAVE = 0xC4B0                 # list selection per page (16)
 SBUF_, TIMER1_ = 0x07, 0x0A
 
@@ -305,6 +311,8 @@ def emit(a):
     a.L('k2'); lda(U, KIND)
     a.cmpbi(U, K_ROOT); J('JE', 'key_root')
     a.cmpbi(U, K_LAYERS); J('JE', 'key_layers')
+    a.cmpbi(U, K_PEEK); J('JNE', 'k3'); a.ljmp('key_peek')
+    a.L('k3')
     # SPLIT / ENV pages
     a.cmpbi(T, K_EXIT); J('JNE', 'kp1'); a.ljmp('to_parent')
     a.L('kp1'); a.cmpbi(T, K_UP); J('JNE', 'kp2'); lda(T, SEL); a.cmpbi(T, 0); J('JE', 'kpr'); a.decb(T)
@@ -510,7 +518,10 @@ def emit(a):
     # row 0: title + section chips
     a.lcall('tclr'); ldw(P, PAGEP); a.ld_idx(Q, P, 0); a.ldbi(T, 1); a.lcall('put')
     lda(T, KIND); a.cmpbi(T, K_ROOT); J('JE', 'd0r')
-    lda(T, SEC); a.cmpbi(T, 4); J('JNE', 'd0c')
+    a.cmpbi(T, K_PEEK); J('JNE', 'd0s'); a.ldi_l(Q, 's_pkpeak'); lda(T, PK_MODE); a.cmpbi(T, 0); J('JE', 'd0p')
+    a.ldi_l(Q, 's_pklive')
+    a.L('d0p'); a.ldbi(T, 39); a.lcall('rput'); a.sjmp('d0e')
+    a.L('d0s'); lda(T, SEC); a.cmpbi(T, 4); J('JNE', 'd0c')
     a.ldi_l(Q, 's_all'); a.ldbi(T, 39); a.lcall('rput'); a.sjmp('d0e')
     a.L('d0c'); a.ldi_l(Q, 's_chips'); a.ldbi(T, 28); a.lcall('put'); a.sjmp('d0e')
     a.L('d0r'); a.ldi_l(Q, 's_ver'); a.ldbi(T, 39); a.lcall('rput')
@@ -520,7 +531,8 @@ def emit(a):
     a.L('dk1'); a.cmpbi(T, K_SPLIT); J('JNE', 'dk2'); a.lcall('draw_split'); a.sjmp('dgfx')
     a.L('dk2'); a.cmpbi(T, K_ENV); J('JNE', 'dk3'); a.lcall('draw_env_text'); a.sjmp('dgfx')
     a.L('dk3'); a.cmpbi(T, K_LIST); J('JNE', 'dk4'); a.lcall('draw_list'); a.sjmp('dgfx')
-    a.L('dk4'); a.lcall('draw_layers')
+    a.L('dk4'); a.cmpbi(T, K_PEEK); J('JNE', 'dk5'); a.lcall('draw_peek'); a.sjmp('dgfx')
+    a.L('dk5'); a.lcall('draw_layers')
     a.L('dgfx'); a.lcall('gfx')
     lda(T, PG); a.cmpbi(T, PIDX['dlm']); J('JNE', 'dg1'); a.ldi_l(R1A, 'wave_view'); a.lcall(P4); a.ret()
     a.L('dg1'); lda(T, KIND); a.cmpbi(T, K_ENV); J('JNE', 'dret'); a.lcall('env_lines')
@@ -654,7 +666,7 @@ def emit(a):
     a.cmpbi(U, 0); J('JNE', 'g_body')
     lda(C, TL); a.cmpb(V, C); J('JC', 'g_t1'); a.ldbi(X, 0x3F); a.sjmp('g_chip')    # inside the title tab
     a.L('g_t1'); a.cmpbi(T, 7); J('JNE', 'g_chip'); a.ldbi(X, 0x3F)
-    a.L('g_chip'); lda(C, KIND); a.cmpbi(C, K_ROOT); J('JE', 'g_out')
+    a.L('g_chip'); lda(C, KIND); a.cmpbi(C, K_ROOT); J('JE', 'g_out'); a.cmpbi(C, K_PEEK); J('JE', 'g_out')
     lda(C, SEC); a.cmpbi(C, 4); J('JNE', 'g_c1')
     a.cmpbi(V, 29); J('JNC', 'g_out'); a.lcall('g_inv'); a.sjmp('g_out')
     a.L('g_c1'); a.ldb(Z, C); a.addb(Z, C); a.addb(Z, C); a.addbi(Z, 28)        # chip column = 28 + 3*sec
@@ -783,6 +795,7 @@ def emit(a):
     a.L('setaddr'); a.ldb(X, W); a.lcall('dat'); a.ldb(X, W + 1); a.lcall('dat'); a.ldbi(X, 0x24); a.sjmp('cmd')
     emit_wave(a, J, lda, sta, ldw, stw)
     emit_wavesel(a, J, lda, sta, ldw, stw, stock)
+    emit_peek(a, J, lda, sta, ldw, stw)
 
 
 def emit_p4(a):
@@ -892,9 +905,10 @@ def chunks():
     return out
 
 
-STRINGS = [('s_all', 'ALL LAYERS'), ('s_chips', 'L1 L2 U3 U4'), ('s_ver', 'V0.6'),
+STRINGS = [('s_all', 'ALL LAYERS'), ('s_chips', 'L1 L2 U3 U4'), ('s_ver', 'V0.8'),
            ('s_sending', 'SENDING IC6 ... ABOUT 30 S'), ('s_gt', '>'), ('s_lhead', 'SEC WAVE      ZONE'),
-           ('s_lvl', 'LVL'), ('s_off', 'OFF'), ('s_mode', 'MODE'), ('s_split', 'SPLIT')]
+           ('s_lvl', 'LVL'), ('s_off', 'OFF'), ('s_mode', 'MODE'), ('s_split', 'SPLIT'),
+           ('s_pkpeak', 'PEAK BITS'), ('s_pklive', 'LIVE HEX')]
 
 
 def build_data():
@@ -1052,3 +1066,72 @@ def emit_wavesel(a, J, lda, sta, ldw, stw, stock):
     a.L('iwn0'); a.ldbze(W, R5F); a.shl(W, 2); lda(T, SECW); a.ldbze(IDX, T); a.add(W, IDX)
     a.b(0x6D, 0x60, 0x00, W); a.addi(W, TONE_RAM + 0x37); ldw(P, W_PTR); a.ldbi(C, 10)   # MULU hits P: reload
     a.L('iwn'); a.ldb_pi(T, W); a.stb_pi(P, T); a.decb(C); J('JNE', 'iwn'); a.ljmp('fend')
+
+
+# ================= DSP PEEK page (TOOLS): the effects chip's RAM A cells, live =================
+# Rows 1-7: "NN " + 5 cells of 7 chars. PEAK: highest bit used since ENTER (0-23, |x| of the 24-bit cell) + a bar,
+# LIVE: the cell now, 24-bit hex. INC / DEC = PEAK / LIVE, ENTER = clear the peaks, EXIT = TOOLS.
+# Hold a note and watch which cells move: that is where the D-70's sound enters the effects chip.
+PEEK_ORG, PEEK_END = 0x72EF, 0x73B1   # fixed ROM freed by the bulk dump cut: the PEEK helpers (page 7 is full)
+
+
+def emit_peek_fixed(a, J, lda, sta):
+    """runs from fixed ROM, called from page-7 code (page 7 stays in the window)"""
+    a.L('rcc_rd')                                        # Z = cell -> V hi, W+1 mid, W lo (interrupts off)
+    a.pushf(); a.stb_abs(RCC_RD, Z)
+    a.ldb_abs(V, RCC_D0); a.ldb_abs(W + 1, RCC_D0 + 1); a.ldb_abs(W, RCC_D0 + 2); a.popf(); a.ret()
+    a.L('pk_bits')                                       # V:W+1:W -> T = bits of |x| (0..23)
+    a.jbc(V, 7, 'pb_p'); a.notb(V); a.notb(W + 1); a.notb(W)
+    a.L('pb_p'); a.ldbi(T, 16); a.ldb(U, V); a.cmpbi(U, 0); J('JNE', 'pb_l')
+    a.ldbi(T, 8); a.ldb(U, W + 1); a.cmpbi(U, 0); J('JNE', 'pb_l')
+    a.clrb(T); a.ldb(U, W); a.cmpbi(U, 0); J('JE', 'pb_x')
+    a.L('pb_l'); a.incb(T); a.shrb(U, 1); a.cmpbi(U, 0); J('JNE', 'pb_l')
+    a.L('pb_x'); a.ret()
+    a.L('pk_clear'); a.clr(IDX); a.clrb(U)
+    a.L('pc_l'); a.stb_lidx(IDX, PK_PEAK, U); a.inc(IDX); a.cmpi(IDX, 32); J('JNE', 'pc_l')
+    a.ldbi(U, 0xA5); sta(PK_INIT, U); a.ret()
+    a.L('dec2')                                          # T = 0..99 -> 2 digits at [P]+
+    a.clrb(X)
+    a.L('d2a'); a.cmpbi(T, 10); J('JNC', 'd2b'); a.subbi(T, 10); a.incb(X); a.sjmp('d2a')
+    a.L('d2b'); a.addbi(X, 0x30); a.stb_pi(P, X); a.addbi(T, 0x30); a.stb_pi(P, T); a.ret()
+    a.L('hexb')                                          # T -> 2 hex digits at [P]+
+    a.ldb(U, T); a.shrb(U, 4); a.lcall('hx1'); a.ldb(U, T); a.andbi(U, 0x0F)
+    a.L('hx1'); a.cmpbi(U, 10); J('JNC', 'hx2'); a.addbi(U, 7)
+    a.L('hx2'); a.addbi(U, 0x30); a.stb_pi(P, U); a.ret()
+
+
+
+def emit_peek(a, J, lda, sta, ldw, stw):
+    a.L('key_peek')                                      # T = key
+    a.cmpbi(T, K_EXIT); J('JNE', 'kk1'); a.ljmp('to_parent')
+    a.L('kk1'); a.cmpbi(T, K_ENT); J('JNE', 'kk2'); a.ljmp('pk_clear')
+    a.L('kk2'); a.cmpbi(T, K_INC); J('JE', 'kk3'); a.cmpbi(T, K_DEC); J('JNE', 'kk4')
+    a.L('kk3'); lda(T, PK_MODE); a.b(0x95, 0x01, T); sta(PK_MODE, T)   # XORB T, #1
+    a.L('kk4'); a.ret()
+
+    a.L('pk_sample')                                     # update the peaks: every cell PK_ROUNDS times
+    lda(T, PK_INIT); a.cmpbi(T, 0xA5); J('JE', 'dp0'); a.clrb(T); sta(PK_MODE, T); a.lcall('pk_clear')
+    a.L('dp0'); a.ldbi(C + 1, PK_ROUNDS)                # peaks: every cell PK_ROUNDS times a pass
+    a.L('dp_r'); a.clrb(Z)
+    a.L('dp_c'); a.lcall('rcc_rd'); a.lcall('pk_bits'); a.ldbze(IDX, Z); a.ldb_lidx(U, IDX, PK_PEAK)
+    a.cmpb(U, T); J('JC', 'dp_n'); a.stb_lidx(IDX, PK_PEAK, T)
+    a.L('dp_n'); a.incb(Z); a.cmpbi(Z, 32); J('JNE', 'dp_c'); a.djnz(C + 1, 'dp_r')
+    a.ret()
+
+    a.L('draw_peek')
+    a.ldbi(T, 0xFF); sta(SELROW, T); a.lcall('pk_sample')
+    a.ldbi(T, 1); sta(ROW, T); a.clrb(Z)
+    a.L('dp_row'); a.lcall('tclr'); a.ldi(P, TXT); a.ldb(T, Z); a.lcall('dec2'); a.ldbi(U, 0x20); a.stb_pi(P, U)
+    a.ldbi(C, 5)
+    a.L('dp_s'); a.cmpbi(Z, 32); J('JE', 'dp_p')
+    lda(T, PK_MODE); a.cmpbi(T, 0); J('JNE', 'dp_lv')
+    a.ldbze(IDX, Z); a.ldb_lidx(T, IDX, PK_PEAK); a.ldb(V, T); a.lcall('dec2')
+    a.ldb(T, V); a.shrb(T, 2); a.cmpbi(T, 5); J('JNC', 'dp_b'); a.ldbi(T, 4)
+    a.L('dp_b'); a.ldbi(X, 5)
+    a.L('dp_bl'); a.ldbi(U, 0x20); a.cmpbi(T, 0); J('JE', 'dp_bs'); a.ldbi(U, ord('#')); a.decb(T)
+    a.L('dp_bs'); a.stb_pi(P, U); a.djnz(X, 'dp_bl'); a.sjmp('dp_nx')
+    a.L('dp_lv'); a.lcall('rcc_rd'); a.ldb(T, V); a.lcall('hexb'); a.ldb(T, W + 1); a.lcall('hexb')
+    a.ldb(T, W); a.lcall('hexb'); a.ldbi(U, 0x20); a.stb_pi(P, U)
+    a.L('dp_nx'); a.incb(Z); a.djnz(C, 'dp_s')
+    a.L('dp_p'); a.lcall('tpush'); lda(T, ROW); a.incb(T); sta(ROW, T); a.cmpbi(T, 8); J('JNE', 'dp_row')
+    a.ret()

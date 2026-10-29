@@ -58,6 +58,9 @@ uses the LCD's own font; the previews use a stand-in, and the tone names are mad
 | **TOOLS > DUMP IC6 OVER MIDI**: battery RAM out as SysEx, `tools/ic6_decode.py` turns it back into a file | built, decode is byte-exact in the sim |
 | ROM PLAY demo removed: **6.3 KB** of page 7 free (now holds the sliders and the SYNTH menu) | built |
 | Settings saved in battery RAM | waits for an IC6 dump from a real unit |
+| **TOOLS > DSP PEEK**: reads the effects chip (IC23) live, peak bits / hex per cell | **works on hardware** (v0.7) |
+| **DSP LAB**: read / write the effects chip over MIDI SysEx from a PC (`dsp/dsplab.py`) | **works on hardware** (v0.8) |
+| **FX box** (master insert on the effects chip): drive, bit crush, resonant LP/BP/HP filter, decimator, rectifier. Every part goes through it, whatever its Output Assign ([docs/DSP.md](docs/DSP.md)) | **works on hardware** from the PC (`dsp/fxbox.py`); FX page on the D-70 next |
 | Firmware map: banks, LCD, keys, sliders, parameters, free space ([docs/FINDINGS.md](docs/FINDINGS.md)) | first pass |
 
 ## Roadmap
@@ -147,6 +150,9 @@ By hand:
 | `tools/font57.py` | 5 x 7 preview font |
 | `frames/roland_chan_frames.npz` | Hex girl boot frames (same as the SP-808 Rosetta boot) |
 | `docs/FINDINGS.md` | the firmware map |
+| `tools/dsplab.py` | DSP LAB: the SysEx receiver in the firmware (`tools/test_dsplab.py` checks it in the sim) |
+| `dsp/` | PC tools for the effects chip: `dsplab.py`, `fxbox.py`, `hwab.py`, `hwscan.py`, `fxhw_master.py` |
+| `docs/DSP.md` | effects chip findings and the FX box |
 
 ## Legal
 

@@ -191,10 +191,10 @@ class Sim:
             elif mn == 'NEGB':
                 r = self.regno(ops[0]); a_ = self.reg[r]; v = -a_ & 255; self.reg[r] = v
                 self.z = v == 0; self.c = a_ == 0
-            elif mn in ('INC', 'DEC', 'DECB', 'CLRB', 'SHL', 'INCB', 'CLR', 'SHRB', 'SHR'):
+            elif mn in ('INC', 'DEC', 'DECB', 'CLRB', 'SHL', 'SHLB', 'INCB', 'CLR', 'SHRB', 'SHR'):
                 g, st = self.opnd(ops[0], w); msk = 0xFFFF if w else 0xFF
                 v = g()
-                if mn in ('SHL',): v <<= int(ops[1][1:])
+                if mn in ('SHL', 'SHLB'): v <<= int(ops[1][1:])
                 elif mn in ('SHR', 'SHRB'): v >>= int(ops[1][1:])
                 else: v = {'INC': v + 1, 'DEC': v - 1, 'DECB': v - 1, 'CLRB': 0, 'INCB': v + 1, 'CLR': 0}[mn]
                 v &= msk; st(v); self.z = v == 0
