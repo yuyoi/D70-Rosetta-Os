@@ -40,7 +40,7 @@ W, P, Q, V, C, IDX, Z = 0x20, 0x22, 0x24, 0x26, 0x28, 0x2C, 0x2E
 R1A = 0x1A
 
 
-IN_ORG, IN_END = 0x9132, 0x97AE       # page 4: the cut tone + rhythm edit screens (cuts.py)
+IN_ORG, IN_END = 0x9132, 0x963F       # page 4: the cut tone + rhythm edit screens (cuts.py); 0x9640-0x97AE = FX2
 TICK_ORG, TICK_END = 0x73D8, 0x75AF   # fixed ROM freed by the bulk load cut (cuts.py): the clock lives here,
                                       # called from page 7 directly (fixed ROM is in every bank)
 

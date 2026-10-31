@@ -20,6 +20,7 @@ import sliders as SL
 import synth as SY
 import arp as AR
 import dsplab as DL
+import fxfw2 as FX
 from asm import Asm
 import cuts
 import font57
@@ -29,10 +30,12 @@ ARGS = argparse.Namespace(even=None, odd=None)
 NPZ = OUT = None
 
 
-def configure(even, odd, out=None, frames=None):
-    """set the dumps and folders (the command line at the bottom, or rosetta_patcher.py)"""
+def configure(even, odd, out=None, frames=None, rcc=None):
+    """set the dumps and folders (the command line at the bottom, or rosetta_patcher.py).
+    rcc = your own effects chip dump (dsp/dsplab.py dump rcc.txt, stock effect program loaded) for the FX tables"""
     global NPZ, OUT
     ARGS.even, ARGS.odd = even, odd
+    if rcc: FX.fx2.DUMP = rcc
     OUT = out or os.path.join(HERE, '..', 'build')
     NPZ = frames or os.path.join(HERE, '..', 'frames', 'roland_chan_frames.npz')
 
@@ -43,6 +46,8 @@ HOOK, HOOK_OLD = 0x130D, bytes([0xB1, 0x00, 0x09])   # LDB INT_PEND,#00
 STREAM_FILE, STREAM_MAX = 0x0000, 0x1000       # free FF, seen at CPU 0x8000 with bank 0
 CODE_END = 0x2400                              # free FF runs 0x2083-0x23FF
 UI_HOOK, UI_OLD = 0x151D, bytes([0xEF, 0xDF, 0x1E])   # LCALL 33FF (stock UI step)
+CARD_ANY, CARD_ANY_OLD = 0x4242, bytes([0xB1, 0xFF, 0x1C, 0xF0])   # LDB R1C,#FF ; RET  (unknown card name)
+CARD_ANY_NEW = bytes([0x75, 0xE0, 0x1C, 0xF0])                       # ADDB R1C,#E0 ; RET (ID = header +0x20 - 1)
 
 
 def pack(px, width=240):
@@ -149,13 +154,9 @@ def main():
     from collections import defaultdict                  # pages 4 and 7 call each other: sizes first, then labels
     p4 = Asm(AR.IN_ORG); p4.ext = defaultdict(int); AR.emit_in(p4); SY.emit_p4(p4); p4.assemble()
     p4_first = dict(p4.labels)
+    p5 = Asm(SY.P5_ORG); p5.ext = defaultdict(int); SY.emit_p5(p5); p5.assemble(); p5_first = dict(p5.labels)
     f4 = 4 * 0x4000 + AR.IN_ORG - 0x8000
-    def pk_emit(ext):                                    # DSP PEEK helpers: freed fixed ROM (page 7 is full)
-        pk = Asm(SY.PEEK_ORG); pk.ext = ext
-        SY.emit_peek_fixed(pk, pk.jcc, lambda r, x: pk.ldb_abs(r, x), lambda x, r: pk.stb_abs(x, r))
-        return pk, pk.assemble()
-    pk, _ = pk_emit(defaultdict(int))
-    p7 = Asm(SY.ORG); p7.ext = dict(dlabels, **fx.labels, **p4.labels, **pk.labels); SL.emit(p7); SY.emit(p7)
+    p7 = Asm(SY.ORG); p7.ext = dict(dlabels, **fx.labels, **p4.labels, **p5.labels); SL.emit(p7); SY.emit(p7)
     p7code = p7.assemble()
     p4 = Asm(AR.IN_ORG); p4.ext = dict(dlabels, **p7.labels); AR.emit_in(p4); SY.emit_p4(p4); p4code = p4.assemble()
     assert p4.labels == p4_first, 'page 4 labels moved between passes'
@@ -166,15 +167,22 @@ def main():
     assert img[jt:jt + 3] == bytes([0xE7]) + ((SY.GK_STOCK - 0x8009) & 0xFFFF).to_bytes(2, 'little')
     img[jt + 1:jt + 3] = ((p4.labels['gk_hook'] - 0x8009) & 0xFFFF).to_bytes(2, 'little')
     p7.labels.update(fx.labels); p7.labels.update(p4.labels)
-    pk_first = dict(pk.labels); pk, pkcode = pk_emit(dict(dlabels, **p7.labels))
-    assert pk.labels == pk_first, 'PEEK labels moved between passes'
-    assert SY.PEEK_ORG + len(pkcode) <= SY.PEEK_END + 1, 'PEEK helpers do not fit (%d B)' % len(pkcode)
-    assert set(img[SY.PEEK_ORG:SY.PEEK_ORG + len(pkcode)]) == {0xFF}
-    img[SY.PEEK_ORG:SY.PEEK_ORG + len(pkcode)] = pkcode
-    p7.labels.update(pk.labels)
-    print('DSP PEEK helpers %04X-%04X (%d B)' % (SY.PEEK_ORG, SY.PEEK_ORG + len(pkcode) - 1, len(pkcode)))
+    p5 = Asm(SY.P5_ORG); p5.ext = dict(dlabels, **p7.labels); SY.emit_p5(p5); p5code = p5.assemble()   # WAVE picker
+    assert p5.labels == p5_first, 'page 5 labels moved between passes'
+    assert SY.P5_ORG + len(p5code) <= SY.P5_END + 1, 'page 5 code does not fit (%d B)' % len(p5code)
+    f5 = 5 * 0x4000 + SY.P5_ORG - 0x8000
+    assert set(img[f5:f5 + len(p5code)]) == {0xFF}, 'page 5 block not free'
+    img[f5:f5 + len(p5code)] = p5code; p7.labels.update(p5.labels)
+    print('WAVE picker page 5 %04X-%04X (%d B)' % (SY.P5_ORG, SY.P5_ORG + len(p5code) - 1, len(p5code)))
     # DSP LAB: our SysEx (F0 7D 4C ...) caught in the MIDI get-byte jump entry, handled on page 2
-    dl_segs, dl_labels = DL.build({})
+    # FX2: SINGLE / DOUBLE master-insert effects (fxfw2.py), engine + tables on page 4, polled from lab_get (fx_tick)
+    fx_segs, fx_labels, fx_rep, _ = FX.build()
+    for org, blob in fx_segs:
+        f = org if org < 0x8000 else 4 * 0x4000 + org - 0x8000
+        assert set(img[f:f + len(blob)]) == {0xFF}, 'FX2 block %04X not free' % org
+        img[f:f + len(blob)] = blob
+    print(fx_rep)
+    dl_segs, dl_labels = DL.build(fx_labels)
     for org, blob in dl_segs:
         f = org if org < 0x8000 else 2 * 0x4000 + org - 0x8000
         assert set(img[f:f + len(blob)]) == {0xFF}, 'DSP LAB block %04X not free' % org
@@ -183,7 +191,11 @@ def main():
     rel = (dl_labels['lab_get'] - (DL.JT_GET + 3)) & 0xFFFF
     img[DL.JT_GET + 1:DL.JT_GET + 3] = rel.to_bytes(2, 'little')
     print('DSP LAB get %04X (%d B), do page 2 %04X (%d B)' % (dl_segs[0][0], len(dl_segs[0][1]), dl_segs[1][0], len(dl_segs[1][1])))
-    f7 = 7 * 0x4000 + SY.ORG - 0x8000
+    # any card name: stock 0x4226 wants "SN-U110-" or "SN-SPLA-" at header +0x10, else no card (FF).
+    # The fail exit now undoes the SPLA +0x20 and keeps the card's ID (header +0x20, minus 1) like an SN-U110.
+    assert bytes(img[CARD_ANY:CARD_ANY + 4]) == CARD_ANY_OLD
+    img[CARD_ANY:CARD_ANY + 4] = CARD_ANY_NEW
+    f7 =7 * 0x4000 + SY.ORG - 0x8000
     assert SY.ORG + len(p7code) <= SY.END + 1, 'page 7 code does not fit (%d B)' % len(p7code)
     assert set(img[f7:f7 + len(p7code)]) == {0xFF}
     img[f7:f7 + len(p7code)] = p7code
@@ -231,19 +243,23 @@ def main():
     assert sim.frames == frames, 'frame mismatch: %d frames shown, first bad %s' % (
         len(sim.frames), next((i for i, (x, y) in enumerate(zip(sim.frames, frames)) if x != y), None))
     ram0 = bytearray(ram0); ram0[DL.LS_STATE - 0xC000] = 0             # the player clears the DSP LAB SysEx state
+    ram0[0xC630 - 0xC000:0xC630 - 0xC000 + len(PL.FX_DEFAULTS)] = bytes(PL.FX_DEFAULTS)   # and the FX2 settings
     assert sim.ram[:0x3E00] == ram0[:0x3E00], 'RAM1 not restored'       # 0xFE00-0xFFFF = sim stack
     assert bytes(sim.reg[0x30:0x4C]) == reg0[0x30:0x4C] and sim.reg[0x54] == 0x02, 'registers changed'
     assert sim.reg[0x09] == 0 and sim.bank == 0x02, 'hook instruction / bank not restored'
     assert bytes(sim.lcd.ram) == lcd0, 'LCD RAM not left as found'
     assert sim.lcd.mode == 0x9C, 'display mode not restored'
+    assert getattr(sim, 'kbd_reads', 0) == 512, 'key scan chip not drained (%d reads)' % getattr(sim, 'kbd_reads', 0)
 
     tour = menu_tour(bytes(img), asm, masm)
     assert dump_check(bytes(img), masm), 'IC6 dump does not match'
 
     os.makedirs(OUT, exist_ok=True)
-    save_tour(tour, os.path.join(OUT, 'D70_rosetta_v08_menu_tour.png'))
-    save_tour(synth_shots, os.path.join(OUT, 'D70_rosetta_v08_synth_tour.png'))
-    name = 'D70_rosetta_v08'
+    save_tour(tour, os.path.join(OUT, 'D70_rosetta_v010_menu_tour.png'))
+    save_tour(synth_shots, os.path.join(OUT, 'D70_rosetta_v010_synth_tour.png'))
+    fxs = [x for x in synth_shots if any(k in bytes(x[1]) for k in (b'EFFECTS', b'SINGLE', b'DOUBLE'))]
+    save_tour(fxs, os.path.join(OUT, 'D70_rosetta_v010_fx_tour.png'))            # just the effects pages
+    name = 'D70_rosetta_v010'
     ev, od = bytes(img[0::2]), bytes(img[1::2])
     for suf, data in (('IC4_even', ev), ('IC9_odd', od), ('combined', bytes(img))):
         open(os.path.join(OUT, '%s_%s.bin' % (name, suf)), 'wb').write(data)
@@ -424,6 +440,7 @@ def synth_check(img, p7, ui):
             raise AssertionError('page 4 entry %04X' % sm.rw(0x1A))
         return True
     def p5(sm):
+        if sm.rw(0x1A) == p7.labels['ws_main']: return False   # our own page-5 code: the real stub runs it
         ad = sm.rw(0xD4) | sm.rw(0xD6) << 16
         if sm.rw(0x1A) == SY.RD: sm.reg[0xCA] = mem.get(ad, 0); sm.c = False
         elif sm.rw(0x1A) == SY.WR: mem[ad] = sm.reg[0xCA]; writes.append((ad, sm.reg[0xCA]))
@@ -491,15 +508,19 @@ def synth_check(img, p7, ui):
     step(SY.K_ENT); step(SY.K_ENT)                                     # SOUND > LAYER (L1)
     assert sim.ram[SY.PG - 0xC000] == SY.PIDX['wave']
     m0, n0_ = mem[0x0351 + 0x0A], mem[0x0351 + 0x0B]
-    step(SY.K_INC)                                                     # WAVE: next wave, tone record rebuilt
+    step(SY.K_DN); step(SY.K_INC)                                      # WAVE: next wave, tone record rebuilt
     assert writes[-2:] == [(0x0351 + 0x0A, m0), (0x0351 + 0x0B, n0_ + 1)] and fixes[-1] == 0, (writes[-2:], fixes)
     assert applies[-1] == len(writes)
-    mem[0x0351 + 0x0A] = 0x40; mem[0x0351 + 0x0B] = 46; step(SY.K_INC)  # last wave of I1 -> I2 1
-    assert writes[-2:] == [(0x0351 + 0x0A, 0x41), (0x0351 + 0x0B, 0)], writes[-2:]
-    step(SY.K_DEC)                                                     # and back to I1 47
+    mem[0x0351 + 0x0A] = 0x40; mem[0x0351 + 0x0B] = 46; step(SY.K_INC)  # last wave of I1: stays (inside the bank)
     assert writes[-2:] == [(0x0351 + 0x0A, 0x40), (0x0351 + 0x0B, 46)], writes[-2:]
-    for _ in range(8): step(SY.K_DN, shot=False)                       # down to DLM: the list scrolls
-    assert sim.ram[SY.STOP - 0xC000] == 3, sim.ram[SY.STOP - 0xC000]
+    step(SY.K_DEC)                                                     # I1 46
+    assert writes[-2:] == [(0x0351 + 0x0A, 0x40), (0x0351 + 0x0B, 45)], writes[-2:]
+    sim.reg[SY.RE1] = 0x0D; step(SY.K_UP); step(SY.K_INC)              # BANK: I1 -> I2, wave clamped to I2's 44
+    assert writes[-2:] == [(0x0351 + 0x0A, 0x41), (0x0351 + 0x0B, 43)], writes[-2:]
+    assert sim.reg[SY.RE1] == 0xFF, 'BANK must look at the card slots again'   # (no card in the sim)
+    step(SY.K_DEC); assert writes[-2:] == [(0x0351 + 0x0A, 0x40), (0x0351 + 0x0B, 43)], writes[-2:]
+    for _ in range(9): step(SY.K_DN, shot=False)                       # down to DLM: the list scrolls
+    assert sim.ram[SY.STOP - 0xC000] == 4, sim.ram[SY.STOP - 0xC000]
     for _ in range(3): step(SY.K_UP, shot=False)                       # back up to SHIFT
     step(SY.K_DEC)                                                     # SHIFT - 1
     assert writes[-1] == (0x019E + 0x23 + 0x02, 23), (writes[-3:], [hex(sim.ram[k - 0xC000]) for k in (SY.PG, SY.SEL, SY.COL, SY.SEC)])
@@ -523,17 +544,17 @@ def synth_check(img, p7, ui):
         if mode: assert ('smp', 3, 2) in wreads           # the sample under middle C (zone 2)
         wreads.clear()
     step(SY.K_EXIT); step(SY.K_UP); step(SY.K_ENT); step(SY.K_ENT)     # SOUND > LAYER (section ALL)
-    for _ in range(8): step(SY.K_DN, shot=False)                       # DLM  >
+    for _ in range(9): step(SY.K_DN, shot=False)                       # DLM  >
     wreads.clear(); step(SY.K_ENT); view_check()                       # the DLM page and its view
     assert sim.ram[SY.PG - 0xC000] == SY.PIDX['dlm']
     mem[0x0351 + 0x0D] = 1; mem[0x0351 + 0x0E] = 5; mem[0x0351 + 0x0F] = 9; step(SY.K_UP); view_check()   # MODE B
     step(SY.K_DN); step(SY.K_DN); n0 = len(writes); step(SY.K_INC)     # START + 1 (section ALL: four layers)
     assert [w[0] for w in writes[n0:]] == [0x0351 + k * 0x3E + 0x0E for k in range(4)], writes[n0:]
     s0 = writes[-1][1]
-    n0 = len(writes); dialq.append(3); step(shot=False)               # Alpha Dial: 3 clicks = START + 3, once
-    assert writes[n0:] == [(0x0351 + k * 0x3E + 0x0E, s0 + 3) for k in range(4)], writes[n0:]
-    n0 = len(writes); dialq.append(-2); step(shot=False)              # 2 clicks back
-    assert [w[1] for w in writes[n0:]] == [s0 + 1] * 4, writes[n0:]
+    n0 = len(writes); dialq.append(3); step(shot=False)               # Alpha Dial: 3 clicks = START + 5 (3 + 9/4), once
+    assert writes[n0:] == [(0x0351 + k * 0x3E + 0x0E, s0 + 5) for k in range(4)], writes[n0:]
+    n0 = len(writes); dialq.append(-2); step(shot=False)              # 2 clicks back = 3 (2 + 4/4)
+    assert [w[1] for w in writes[n0:]] == [s0 + 2] * 4, writes[n0:]
     n0 = len(writes); sim.ram[SY.SLD - 0xC000] = 127; step(shot=False)  # slider 1 to the top: START = 127
     assert [w[1] for w in writes[n0:]] == [127] * 4 and sls[-1] == 127, (writes[n0:], sls[-3:])
     n0 = len(writes); sim.ram[SY.SLD - 0xC000] = 64; step(shot=False)   # half way: 64
@@ -544,12 +565,41 @@ def synth_check(img, p7, ui):
     n0 = len(writes); sim.ram[SY.SLD - 0xC000] = 127; step(shot=False)  # and back to B
     assert [w[1] for w in writes[n0:]] == [1] * 4, writes[n0:]
     step(SY.K_DN)
-    step(SY.K_EXIT); step(SY.K_EXIT); step(SY.K_EXIT)                  # LOOP VIEW > LAYER > SOUND > SYNTH
+    step(SY.K_EXIT); assert sim.ram[SY.PG - 0xC000] == SY.PIDX['synth']   # DLM > SYNTH (cursor back on SOUND)
     for _ in range(4): step(SY.K_DN, shot=False)                       # SOUND -> EFFECTS: 4 keys ...
-    dialq.append(3); step(shot=False)                                  # ... + 3 dial clicks
-    step(SY.K_ENT); step(SY.K_RT); step(SY.K_DN); step(SY.K_INC)       # chorus LEVEL + 1
-    assert writes[-1] == (0x00AD + 0xB3, 1) and fx and fx[-1] == len(writes), (writes[-4:], fx)
-    step(SY.K_EXIT)
+    dialq.append(4); step(shot=False)                                  # ... + 4 dial clicks (DLM sits after LFO)
+    fxr = lambda k: sim.ram[SY.RAM_BASE + k - 0xC000]
+    pg = lambda: sim.ram[SY.PG - 0xC000]
+    for k, v in enumerate(PL.FX_DEFAULTS): sim.ram[0xC630 + k - 0xC000] = v   # what the player writes at boot
+    step(SY.K_ENT); assert pg() == SY.PIDX['fx']                       # EFFECTS: SINGLE / DOUBLE
+    sim.ram[SY.RAM_BASE + FX.S_SEL - 0xC000] = 1                       # (as if DOUBLE was on)
+    step(SY.K_ENT); assert pg() == SY.PIDX['fxs'] and fxr(FX.S_SEL) == 0   # SINGLE: on, CHORUS 1 -> stock reload
+    assert fx and fx[-1] == len(writes), fx
+    step(SY.K_RT); step(SY.K_DN); step(SY.K_INC)                       # chorus LEVEL + 1
+    assert writes[-1] == (0x00AD + 0xB3, 1) and fx[-1] == len(writes), (writes[-4:], fx)
+    step(SY.K_UP); step(SY.K_INC)                                      # TYPE: CHORUS 2 = stock chorus TYPE 1
+    assert writes[-1] == (0x00AD + 0xB1, 1) and fx[-1] == len(writes) and fxr(FX.S_TYPE) == 1, (writes[-2:], fx)
+    for _ in range(3): step(SY.K_INC, shot=False)                      # ... FB-CHORUS, FLANGER, SHORT DLY
+    assert writes[-1] == (0x00AD + 0xB1, 4) and fxr(FX.S_TYPE) == 4, (writes[-2:], fxr(FX.S_TYPE))
+    nw = len(writes); step(SY.K_INC)                                   # DRIVE: the box, no stock write
+    assert (fxr(FX.S_TYPE), writes[nw:], sim.ram[SY.NITEM - 0xC000]) == (5, [], 3), (
+        fxr(FX.S_TYPE), writes[nw:], sim.ram[SY.NITEM - 0xC000])   # rows TYPE DRIVE MIX
+    step(SY.K_DN); step(SY.K_INC); assert fxr(FX.S_P) == 9            # DRIVE 8 -> 9
+    step(SY.K_DN); step(SY.K_INC); assert fxr(FX.S_MIX) == 11         # MIX 10 -> 11
+    step(SY.K_DN, shot=False); assert sim.ram[SY.SEL - 0xC000] == 2    # no 4th row
+    step(SY.K_UP); step(SY.K_UP)
+    for _ in range(3): step(SY.K_INC, shot=False)
+    step(SY.K_INC); assert fxr(FX.S_TYPE) == 9 and sim.ram[SY.NITEM - 0xC000] == 4   # LPF: TYPE CUTOFF RESO MIX
+    nf = len(fx)
+    step(SY.K_EXIT); step(SY.K_DN); step(SY.K_ENT)                     # DOUBLE
+    assert pg() == SY.PIDX['fxd'] and fxr(FX.S_SEL) == 1 and len(fx) == nf
+    step(SY.K_DEC); assert fxr(FX.D_A) == 0 and fxr(FX.D_B) == 2       # box 1 DRIVE: box 2 CRUSH -> RECTIFY
+    step(SY.K_RT); step(SY.K_DEC); assert fxr(FX.D_B) == 2             # CRUSH / DRIVE are skipped after DRIVE
+    step(SY.K_INC); assert fxr(FX.D_B) == 3 and sim.ram[SY.NITEM - 0xC000] == 3   # LPF: TYPE CUTOFF RESO
+    step(SY.K_DN); step(SY.K_DN); step(SY.K_INC); assert fxr(FX.D_BP + 1) == 5    # RESO 4 -> 5
+    step(SY.K_EXIT); step(SY.K_UP); step(SY.K_ENT)                     # SINGLE again (LPF): no reload
+    assert pg() == SY.PIDX['fxs'] and fxr(FX.S_SEL) == 0 and len(fx) == nf
+    step(SY.K_EXIT); step(SY.K_EXIT); step(SY.K_UP, shot=False)        # back on EFFECTS
     for _ in range(9): step(SY.K_UP, shot=False)
     step(SY.K_UP); step(SY.K_ENT); step(SY.K_DN); step(SY.K_INC)       # SOUND, L2 level + 1
     assert writes[-1] == (0x019E + 0x23 + 1 * 0x0D + 0x01, 73)
@@ -581,7 +631,7 @@ def synth_check(img, p7, ui):
     step(SY.K_F5); step(SY.K_INC); assert writes[-1] == (SY.MOUT_BASE + 7, 1), writes[-2:]   # L2
     step(SY.K_LT); step(SY.K_INC); assert writes[-1] == (0x00AD + 0xBB, 1), writes[-2:]     # SPLIT
     assert len(fx) == nfx, 'MIDI OUT edits must not reload the effects chip'
-    step(SY.K_FXB); assert sim.ram[SY.PG - 0xC000] == SY.PIDX['fx']           # EFFECT/CTRL key
+    step(SY.K_FXB); assert sim.ram[SY.PG - 0xC000] == SY.PIDX['fx'] and sim.ram[SY.RSEL - 0xC000] == 0   # EFFECT/CTRL
     sim.ram[SY.M_ON - 0xC000] = 0; sim.ram[SY.UPREV - 0xC000] = 0; step(shot=False)   # closed, stock runs
     sim.ram[SY.KEYMAP_FX[0] - 0xC000] = SY.KEYMAP_FX[1]; step(shot=False)    # EFFECT/CTRL with the menu closed
     assert sim.ram[SY.M_ON - 0xC000] == 1 and sim.ram[SY.PG - 0xC000] == SY.PIDX['fx']
@@ -682,8 +732,9 @@ if __name__ == '__main__':
     ap.add_argument('odd', help='IC9 (odd) dump, 64 KB')
     ap.add_argument('--out', help='output folder (default: build/)')
     ap.add_argument('--frames', help='boot frames .npz (default: frames/roland_chan_frames.npz)')
+    ap.add_argument('--rcc', required=True, help='your effects chip dump: python dsp/dsplab.py --port <MIDI> dump rcc.txt')
     a = ap.parse_args()
-    configure(a.even, a.odd, a.out, a.frames)
+    configure(a.even, a.odd, a.out, a.frames, a.rcc)
     try:
         main()
     except ValueError as ex:

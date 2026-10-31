@@ -2,8 +2,10 @@
 Roland's code is never shipped: you bring the two dumps (IC4 = even, IC9 = odd), or one combined 128 KB file.
 
 window:        python tools/rosetta_patcher.py
-command line:  python -I tools/rosetta_patcher.py --even IC4.bin --odd IC9.bin --out outdir
-               python -I tools/rosetta_patcher.py --both combined_128k.bin --out outdir
+command line:  python -I tools/rosetta_patcher.py --even IC4.bin --odd IC9.bin --rcc rcc.txt --out outdir
+               python -I tools/rosetta_patcher.py --both combined_128k.bin --rcc rcc.txt --out outdir
+rcc.txt = your D-70's effects chip dump (stock effect program, power-on settings): python dsp/dsplab.py --port <MIDI> dump rcc.txt
+(also needs Rosetta 0.8+ on the chips for DSP LAB; the effects tables are built from it, Roland's program is not shipped)
 Every build runs the full check set (a few minutes); the images are only written when everything passes.
 """
 import argparse, glob, hashlib, io, os, queue, sys, tempfile, threading
@@ -46,14 +48,19 @@ class _Lines(io.TextIOBase):
         return len(s)
 
 
-def build(a, b, outdir, log=print):
+def check_rcc(path):
+    n = sum(1 for l in open(path) if l[:1] == 'W' and len(l) > 9)
+    if n != 256: raise ValueError('%s is not an effects chip dump (want 256 W lines, got %d)' % (path, n))
+
+
+def build(a, b, outdir, rcc, log=print):
     """run the Rosetta build (all checks) on the dumps -> (IC4 image path, IC9 image path)"""
     import boot_build as bb
     os.makedirs(outdir, exist_ok=True)
     with tempfile.TemporaryDirectory() as td:
         ea, ob = os.path.join(td, 'IC4_even.bin'), os.path.join(td, 'IC9_odd.bin')
         open(ea, 'wb').write(a); open(ob, 'wb').write(b)
-        bb.configure(ea, ob, outdir, FRAMES)
+        bb.configure(ea, ob, outdir, FRAMES, rcc)
         old = sys.stdout
         sys.stdout = _Lines(log if log is not print else lambda s: old and old.write(s + '\n'))   # .exe: no stdout
         try:
@@ -68,9 +75,10 @@ def build(a, b, outdir, log=print):
     return ic4, ic9
 
 
-def run(even, odd, outdir, log=print):
+def run(even, odd, outdir, rcc, log=print):
     a, b = load_dumps(even, odd, log)
-    ic4, ic9 = build(a, b, outdir, log)
+    check_rcc(rcc)
+    ic4, ic9 = build(a, b, outdir, rcc, log)
     for p, chip in ((ic4, 'IC4'), (ic9, 'IC9')):
         log('%s: %s (MD5 %s)' % (chip, p, hashlib.md5(open(p, 'rb').read()).hexdigest()[:8]))
     log('done. Burn the two images into 27C512 EPROMs (we use W27C512): %s in IC4, %s in IC9. Keep your original '
@@ -95,7 +103,7 @@ def gui():
     ent = dict(bg=PANEL, fg=TXT, insertbackground=GREEN, relief='flat', font=('Consolas', 10), highlightthickness=1,
                highlightbackground='#1b2a36', highlightcolor=BLUE)
     btn_s = dict(bg=PANEL, fg=GREEN, activebackground=BLUE, activeforeground=BG, relief='flat', font=('Consolas', 10, 'bold'))
-    v_even, v_odd = tk.StringVar(), tk.StringVar()
+    v_even, v_odd, v_rcc = tk.StringVar(), tk.StringVar(), tk.StringVar()
     v_out = tk.StringVar(value=os.path.join(os.path.expanduser('~'), 'Rosetta_D70'))
     dumps = [('EPROM dump', '*.bin *.BIN *.rom *.ROM'), ('all', '*.*')]
     def row(r, label, var, pick):
@@ -106,15 +114,17 @@ def gui():
         title='IC4 (even) EPROM dump, or one combined 128 KB image', filetypes=dumps) or v_even.get()))
     row(2, 'IC9 dump (odd)', v_odd, lambda: v_odd.set(filedialog.askopenfilename(
         title='IC9 (odd) EPROM dump', filetypes=dumps) or v_odd.get()))
-    row(3, 'Output folder', v_out, lambda: v_out.set(filedialog.askdirectory() or v_out.get()))
+    row(3, 'Effects chip dump', v_rcc, lambda: v_rcc.set(filedialog.askopenfilename(
+        title='effects chip dump (dsp/dsplab.py dump rcc.txt)', filetypes=[('text', '*.txt'), ('all', '*.*')]) or v_rcc.get()))
+    row(4, 'Output folder', v_out, lambda: v_out.set(filedialog.askdirectory() or v_out.get()))
     root.columnconfigure(1, weight=1)
-    tk.Label(root, text="You need dumps of your own D-70's v1.11 EPROMs (IC4 + IC9, 27C512). Leave IC9 empty for one "
-             "combined 128 KB file.", bg=BG, fg='#4f6b7a', font=('Consolas', 9), wraplength=670, justify='left').grid(
-        row=4, column=0, columnspan=3, sticky='w', padx=10)
+    tk.Label(root, text="You need dumps of your own D-70's v1.11 EPROMs (IC4 + IC9, 27C512; leave IC9 empty for one "
+             "combined 128 KB file) and its effects chip (dsp/dsplab.py dump, see the README).", bg=BG, fg='#4f6b7a',
+             font=('Consolas', 9), wraplength=670, justify='left').grid(row=5, column=0, columnspan=3, sticky='w', padx=10)
     logw = scrolledtext.ScrolledText(root, height=14, bg=PANEL, fg=GREEN, insertbackground=GREEN, relief='flat',
                                      font=('Consolas', 9), highlightthickness=1, highlightbackground='#1b2a36')
-    logw.grid(row=6, column=0, columnspan=3, sticky='nsew', padx=10, pady=10)
-    root.rowconfigure(6, weight=1)
+    logw.grid(row=7, column=0, columnspan=3, sticky='nsew', padx=10, pady=10)
+    root.rowconfigure(7, weight=1)
     q = queue.Queue()
     def log(s): q.put(s)
     def pump():
@@ -125,14 +135,15 @@ def gui():
         root.after(100, pump)
     def go():
         if not v_even.get(): messagebox.showerror('Rosetta Patcher', 'Pick your IC4 dump first.'); return
+        if not v_rcc.get(): messagebox.showerror('Rosetta Patcher', 'Pick your effects chip dump first.'); return
         btn.config(state='disabled')
         def work():
-            try: run(v_even.get(), v_odd.get() or None, v_out.get(), log)
+            try: run(v_even.get(), v_odd.get() or None, v_out.get(), v_rcc.get(), log)
             except Exception as ex: log('ERROR: %s' % ex)
             log('__done__')
         threading.Thread(target=work, daemon=True).start()
     btn = tk.Button(root, text='BUILD ROSETTA OS', command=go, height=2, width=24, **btn_s)
-    btn.config(fg=BG, bg=GREEN, activebackground=BLUE); btn.grid(row=5, column=0, columnspan=3, pady=6)
+    btn.config(fg=BG, bg=GREEN, activebackground=BLUE); btn.grid(row=6, column=0, columnspan=3, pady=6)
     pump(); root.mainloop()
 
 
@@ -142,11 +153,12 @@ def main():
     ap.add_argument('--even', help='IC4 (even) dump, 64 KB')
     ap.add_argument('--odd', help='IC9 (odd) dump, 64 KB')
     ap.add_argument('--both', help='one combined 128 KB image instead of --even / --odd')
+    ap.add_argument('--rcc', required=True, help='effects chip dump: python dsp/dsplab.py --port <MIDI> dump rcc.txt')
     ap.add_argument('--out', required=True, help='output folder for the two images')
     a = ap.parse_args()
     if not (a.both or (a.even and a.odd)): ap.error('give --even and --odd, or --both')
     try:
-        run(a.both or a.even, None if a.both else a.odd, a.out)
+        run(a.both or a.even, None if a.both else a.odd, a.out, a.rcc)
     except ValueError as ex:
         sys.exit('ERROR: %s' % ex)
 

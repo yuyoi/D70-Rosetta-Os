@@ -27,6 +27,8 @@ MENU = 0x8920              # menu.py menu_entry (ROM page 0, bank 0)
 KEY_EDIT = 0xD37D          # stock power-on key bank 5, bit 7 = [EDIT]
 KEY_EXIT = 0xD37C          # bank 4, bit 7 = [EXIT]
 MENU_ON = 0xC400           # synth.py M_ON: 2 = open on the first main-loop pass
+# fxfw2.py C630-C63A: SEL TYPE P1 P2 MIX | D_A D_AP D_B D_BP1 D_BP2 D_MIX
+FX_DEFAULTS = [0, 0, 8, 8, 10, 1, 4, 1, 8, 4, 12]
 TIMER1, INT_PEND, R54, RA2 = 0x0A, 0x09, 0x54, 0xA2
 
 
@@ -65,7 +67,13 @@ def build():
     a.ldi(AD, GAP); a.lcall('setaddr'); a.ldi(L, SGB); a.lcall('aw_zero')
     a.ldb(X, RA2); a.orbi(X, 0x90); a.lcall('cmd')
     a.L('out')
+    a.clrb(V)                                   # drain the key scan chip like stock's recovery (0x189D): a key
+    a.L('kd'); a.ldb_abs(T, 0x0609); a.ldb_abs(T, 0x0608); a.djnz(V, 'kd')   # edge during the animation is
+                                                # wiped by stock's INT_PEND1 clear right after us -> dead keys
     a.clrb(T); a.stb_abs(0xC6A2, T)                    # dsplab.LS_STATE: no SysEx in progress (RAM is not cleared)
+    a.ldi(P, 0xC630); a.ldi_l(Q, 'fxdef'); a.ldbi(V, len(FX_DEFAULTS))   # fxfw2 settings: SINGLE, CHORUS 1 (box
+    a.L('fxd'); a.ldb_pi(T, Q); a.stb_pi(P, T); a.djnz(V, 'fxd')        # off), params / MIX ready for the boxes
+    a.clrb(T)
     a.ldb_abs(T, KEY_EXIT); a.jbs(T, 7, 'stock')      # [EXIT] held at power-on: plain D-70, no menu
     a.ldbi(T, 2); a.stb_abs(MENU_ON, T)                # the SYNTH engine opens the Rosetta menu on its first pass
     a.L('stock')
@@ -74,6 +82,7 @@ def build():
     a.popf()
     a.ldbi(INT_PEND, 0x00)                      # the instruction the hook replaced
     a.ret()
+    a.L('fxdef'); a.data(bytes(FX_DEFAULTS))
 
     # ---- decode one frame from [PS]+ into BUF (codec_d70 tokens)
     a.L('decode'); a.ldi(P, BUF)

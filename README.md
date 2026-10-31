@@ -16,9 +16,9 @@ and layer structure out, our own engine, menus and live controls in.
 It's the same Rosetta boot as the [SP-808 Rosetta OS](https://github.com/yuyoi/Sp-808-rosetta-looper-OS-) and the
 [Sony HR-GP5 Rosetta OS](https://github.com/yuyoi/Sony-HR-GP5-Rosetta-OS), now on a Roland synth.
 
-> **Work in progress.** v0.6 is burned and running on a real D-70; the newest parts (arpeggiator fix, MIDI OUT page,
-> EFFECT / MIDI OUT buttons, knob lock, the screen cut) are checked in the simulator and MAME and are being tested on
-> the unit now. Keep your original EPROMs.
+> **Work in progress.** v0.10 is burned and running on a real D-70: our own effects (SINGLE / DOUBLE on the
+> effects chip), custom U-110 cards with a BANK row, and the keyboard fix (keys no longer die while editing).
+> Keep your original EPROMs.
 
 > **Made by JunkSmithWizard (JSW) together with Claude (Anthropic's AI).** Claude did the reverse engineering
 > (80C196 disassembly, bank and LCD mapping, panel scan, the parameter system, slider and ROM PLAY code) and wrote
@@ -60,7 +60,12 @@ uses the LCD's own font; the previews use a stand-in, and the tone names are mad
 | Settings saved in battery RAM | waits for an IC6 dump from a real unit |
 | **TOOLS > DSP PEEK**: reads the effects chip (IC23) live, peak bits / hex per cell | **works on hardware** (v0.7) |
 | **DSP LAB**: read / write the effects chip over MIDI SysEx from a PC (`dsp/dsplab.py`) | **works on hardware** (v0.8) |
-| **FX box** (master insert on the effects chip): drive, bit crush, resonant LP/BP/HP filter, decimator, rectifier. Every part goes through it, whatever its Output Assign ([docs/DSP.md](docs/DSP.md)) | **works on hardware** from the PC (`dsp/fxbox.py`); FX page on the D-70 next |
+| **FX box** (master insert on the effects chip): drive, bit crush, resonant LP/BP/HP filter, decimator, rectifier. Every part goes through it, whatever its Output Assign ([docs/DSP.md](docs/DSP.md)) | **works on hardware** from the PC (`dsp/fxbox.py`) |
+| **EFFECTS > SINGLE / DOUBLE** on the D-70 itself (v0.10): SINGLE = stock chorus or one of DRIVE, DECIMATE, CRUSH, RECTIFY, LPF, BPF, HPF, LO-FI with its params + MIX; DOUBLE = box A (DRIVE / DECIMATE) into box B (DRIVE, CRUSH, RECTIFY, LPF, BPF, HPF). Compiled from `tools/fx2.py`, the firmware engine is checked bit for bit against it (`tools/test_fxfw2.py`) | **works on hardware** (v0.10) |
+| **LAYER page BANK row**: I1 / I2 / I3 / card; changing it makes the D-70 read the card slots again, WAVE stays inside the bank | **works on hardware** (v0.10) |
+| **Custom U-110 cards**: the D-70 only takes a card whose header name starts `SN-U110-` (the U-110 takes any name). Build cards with [u110-romhex-studio](https://github.com/yuyoi/u110-romhex-studio); this build also accepts any name | **works on hardware** |
+| **Keyboard fix**: the boot animation runs with interrupts off and the stock boot then clears pending interrupts, which could leave the key scan chip waiting forever (keys dead, MIDI fine). The player now drains the chip like Roland's own buffer-full recovery, and every main-loop pass repairs the keyboard queue / interrupt mask | **works on hardware** |
+| **DLM** in the SYNTH menu; **DSP LAB command 5** reads CPU memory (`dsp/dsplab.py mem ADDR`, `keys`) | built, sim checked |
 | Firmware map: banks, LCD, keys, sliders, parameters, free space ([docs/FINDINGS.md](docs/FINDINGS.md)) | first pass |
 
 ## Roadmap
@@ -112,10 +117,11 @@ uses the LCD's own font; the previews use a stand-in, and the tone names are mad
 **Easiest: Rosetta Patcher (Windows).** Download `RosettaPatcher-D70.exe` from the
 [Releases](https://github.com/yuyoi/D70-Rosetta-Os/releases) page and run it: no Python needed. Or, with Python 3
 (`pip install numpy pillow`), double-click `tools/Rosetta_Patcher.bat` (or run `python tools/rosetta_patcher.py`).
-Pick your IC4 and IC9 dumps (either order: it sorts them out) or one combined 128 KB file, and an output folder.
-It checks that they are v1.11, runs the whole build with every check (a few minutes) and writes the two images to
-burn. Command line: `python -I tools/rosetta_patcher.py --even IC4.bin --odd IC9.bin --out outdir`
-(or `--both combined.bin`).
+Pick your IC4 and IC9 dumps (either order: it sorts them out) or one combined 128 KB file, your effects chip dump
+(step 3 below) and an output folder. It checks that they are v1.11, runs the whole build with every check (a few
+minutes) and writes the two images to burn. The Releases .exe is still v0.8 (no effects chip dump needed) until a
+new one is cut. Command line:
+`python -I tools/rosetta_patcher.py --even IC4.bin --odd IC9.bin --rcc rcc.txt --out outdir` (or `--both combined.bin`).
 
 By hand:
 
@@ -124,10 +130,14 @@ By hand:
    The tools expect firmware **v1.11** (IC4 MD5 `3f9e12e8d73380a5c26c312940f1ff6e`,
    IC9 MD5 `640e279056386577499544f826df9253`) and refuse anything else.
 2. `pip install pillow numpy`
-3. `python -I tools/boot_build.py dumps/IC4_even.bin dumps/IC9_odd.bin` (a few minutes, most of it the checks)
-4. **Burn two new chips and keep your originals.** 27C512 (we use W27C512):
-   `build/D70_rosetta_v06_IC4_even.bin` goes in **IC4**, `build/D70_rosetta_v06_IC9_odd.bin` in **IC9**.
-5. Power off, swap the chips (notch the same way round), power on. It boots into ROSETTA OS. Hold **[EXIT]** while
+3. **Dump your effects chip** (new in v0.9+; Roland's effect program isn't shipped, the effects tables are built from
+   your unit's): this needs DSP LAB on the D-70, so a first-time build goes v0.8 first (`git checkout 06ae533`,
+   build, burn), then `pip install mido python-rtmidi`, D-70 MIDI IN/OUT to your PC, stock effect type, and
+   `python dsp/dsplab.py --port "<your MIDI port>" dump rcc.txt`
+4. `python -I tools/boot_build.py dumps/IC4_even.bin dumps/IC9_odd.bin --rcc rcc.txt` (a few minutes, most of it the checks)
+5. **Burn two new chips and keep your originals.** 27C512 (we use W27C512):
+   `build/D70_rosetta_v010_IC4_even.bin` goes in **IC4**, `build/D70_rosetta_v010_IC9_odd.bin` in **IC9**.
+6. Power off, swap the chips (notch the same way round), power on. It boots into ROSETTA OS. Hold **[EXIT]** while
    switching on for the plain D-70, **[EDIT]** for the boot menu.
 
 ## Tools

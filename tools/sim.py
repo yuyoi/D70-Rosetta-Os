@@ -59,6 +59,8 @@ class Sim:
             return self.reg[a]
         if a == 0x0802: return 0xFF
         if a == 0x0800: return self.lcd.rd
+        if a in (0x0608, 0x0609):                       # key scan chip data: counted, no key pending
+            self.kbd_reads = getattr(self, 'kbd_reads', 0) + 1; return 0
         if 0x1000 <= a < 0x8000: return self.img[a]
         if 0x8000 <= a < 0xC000:
             if self.bank & 0x20: return self.ic6[(self.bank & 1) * 0x4000 + a - 0x8000]
