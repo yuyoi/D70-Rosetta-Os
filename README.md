@@ -1,4 +1,6 @@
-# Roland D-70 Rosetta OS  (work in progress)
+# D-70 Rosetta OS: the Roland D-70 mod (custom firmware + new effects + custom U-110 cards)
+
+**Roland D-70 (D70) mod / custom OS / firmware upgrade**, work in progress and tested on real hardware. Landing page: [yuyoi.github.io/D70-Rosetta-Os](https://yuyoi.github.io/D70-Rosetta-Os/).
 
 <p align="center"><img src="docs/rosetta_boot_d70.gif" width="720" alt="Hex girl boot animation on the D-70 LCD"></p>
 

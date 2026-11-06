@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Roland D-70 Mods: Rosetta OS custom firmware + new effects + custom cards</title>
+<meta name="description" content="Roland D-70 (D70) mods by Rosetta: a custom OS with live synth pages, new effects on the effects chip (drive, bit crush, decimator, rectifier, resonant filters), custom U-110 sample cards and a keyboard fix. Tested on real hardware, free and open source.">
+<meta name="keywords" content="Roland D-70, D70, D-70 mod, D70 mod, D-70 firmware, D-70 custom OS, D-70 effects, U-110 card, custom samples, LA synthesis, Super LA, synth mod">
+<link rel="canonical" href="https://yuyoi.github.io/D70-Rosetta-Os/">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Roland D-70 Mods: Rosetta OS + new effects + custom cards">
+<meta property="og:description" content="New firmware for the Roland D-70: live synth pages, lo-fi effects on the effects chip, custom U-110 cards. Tested on real hardware.">
+<meta property="og:url" content="https://yuyoi.github.io/D70-Rosetta-Os/">
+<meta property="og:image" content="https://yuyoi.github.io/D70-Rosetta-Os/synth_v06.png">
+<meta name="twitter:card" content="summary_large_image">
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"SoftwareApplication","name":"D-70 Rosetta OS","applicationCategory":"MultimediaApplication","operatingSystem":"Roland D-70 (OS v1.11), Windows/Python for the tools","description":"Custom firmware mod for the Roland D-70 Super LA synthesizer: live synth pages, new effects, custom U-110 cards.","url":"https://yuyoi.github.io/D70-Rosetta-Os/","license":"https://opensource.org/licenses/MIT","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"}}
+</script>
+<style>
+:root{--bg:#f6f6f3;--paper:#fff;--fg:#17181a;--muted:#5c5f63;--rule:#d6d7d2;--bar:#17181a;--bar-fg:#f6f6f3;--accent:#d2461e;--lcd:#b9c94a;--lcd-ink:#28300e}
+@media (prefers-color-scheme:dark){:root{--bg:#121314;--paper:#1b1c1e;--fg:#ececea;--muted:#a3a6aa;--rule:#2e3033;--bar:#ececea;--bar-fg:#121314}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.6 "Helvetica Neue",Arial,sans-serif}
+.wrap{max-width:920px;margin:0 auto;padding:0 16px}
+header{padding:40px 0 24px;text-align:center}
+header img.hero{width:220px;height:220px;image-rendering:pixelated}
+h1{font-size:2rem;line-height:1.2;margin:16px 0 8px}
+.lede{color:var(--muted);font-size:1.1rem;margin:0 auto;max-width:640px}
+.lcd{display:inline-block;margin:20px 0 0;background:var(--lcd);color:var(--lcd-ink);font:600 1.1rem/1.3 "Courier New",monospace;padding:10px 16px;border-radius:4px;letter-spacing:.06em}
+.cta{display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin:24px 0 8px}
+.btn{display:inline-block;padding:12px 18px;border-radius:6px;background:var(--accent);color:#fff;text-decoration:none;font-weight:700}
+.btn.alt{background:transparent;color:var(--fg);border:2px solid var(--fg)}
+h2{background:var(--bar);color:var(--bar-fg);font-size:1rem;letter-spacing:.08em;text-transform:uppercase;padding:8px 12px;margin:40px 0 16px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}
+.card{background:var(--paper);border:1px solid var(--rule);border-radius:6px;padding:14px 16px}
+.card b{display:block;margin-bottom:4px}
+.card span{color:var(--muted);font-size:.95rem}
+figure{margin:16px 0;text-align:center}
+figure img{max-width:100%;border:1px solid var(--rule);border-radius:4px}
+figcaption{color:var(--muted);font-size:.9rem;margin-top:6px}
+ol li{margin:6px 0}
+footer{color:var(--muted);font-size:.9rem;padding:40px 0;border-top:1px solid var(--rule);margin-top:40px}
+a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+<img class="hero" src="hexgirl_icon.png" alt="Rosetta: Hex Girl badge">
+<h1>Roland D-70 Mods: Rosetta OS + new effects + custom cards</h1>
+<p class="lede">New firmware for the Roland D-70 (D70) Super LA synth: live synth pages, lo-fi effects on its own effects chip, and your own sounds on U-110 cards. Free, open source, and tested on a real D-70.</p>
+<div class="lcd">ROSETTA OS  v0.10</div>
+<div class="cta">
+<a class="btn" href="https://github.com/yuyoi/D70-Rosetta-Os">Rosetta OS on GitHub</a>
+<a class="btn alt" href="https://github.com/yuyoi/u110-romhex-studio">Custom cards (U-110 Studio)</a>
+<a class="btn alt" href="https://github.com/yuyoi/D70-Rosetta-Os/releases">Rosetta Patcher</a>
+</div>
+</header>
+
+<figure><img src="rosetta_boot_d70.gif" alt="Hex Girl boot animation on the D-70 LCD"><figcaption>Hex Girl boots on the D-70's 240 x 64 screen.</figcaption></figure>
+
+<h2>What the OS mod adds</h2>
+<div class="grid">
+<div class="card"><b>Live synth pages</b><span>Edit all four layers while you play: wave, zone, pitch, filter, amp, LFO. Envelope pages draw the curve.</span></div>
+<div class="card"><b>DLM page</b><span>Differential Loop Modulation on/off, mode, start and length, with a live view of the loop slice from wave ROM.</span></div>
+<div class="card"><b>New effects</b><span>Drive, bit crush, decimator, rectifier and resonant LP / BP / HP filters, running on the D-70's own effects chip. One effect or two in a row.</span></div>
+<div class="card"><b>Common sliders</b><span>The four sliders become cutoff, resonance, attack and release on all four layers at once.</span></div>
+<div class="card"><b>Custom U-110 cards</b><span>Your own samples on a U-110 card, picked from a BANK row on the layer page.</span></div>
+<div class="card"><b>Keyboard fix</b><span>Keys no longer die while you edit: the key scan chip is drained and repaired the way Roland's own recovery does it.</span></div>
+<div class="card"><b>DSP LAB</b><span>Read and write the effects chip from a PC over MIDI SysEx, for building your own effects.</span></div>
+<div class="card"><b>Hex Girl boot</b><span>A boot animation on the big screen, then straight into the ROSETTA OS menu. Hold EXIT for the plain D-70.</span></div>
+</div>
+<p>Every feature above is confirmed on hardware. Built and waiting for its hardware test: an arpeggiator, a MIDI OUT page and knob lock.</p>
+
+<figure><img src="synth_v06.png" alt="ROSETTA OS and SYNTH pages on the D-70 screen" loading="lazy"><figcaption>ROSETTA OS and SYNTH pages, rendered by the build checker from the real ROM code.</figcaption></figure>
+
+<h2>Custom cards</h2>
+<p>The D-70 reads U-110 sample cards. Build one with <a href="https://github.com/yuyoi/u110-romhex-studio">U-110 Studio</a>: load your WAVs, burn the card, play. One catch found on hardware: the D-70 only takes a card whose header name starts <code>SN-U110-</code>, and U-110 Studio writes that name for you.</p>
+
+<h2>How it works</h2>
+<ol>
+<li>Read your own IC4 and IC9 EPROMs on a programmer such as a T48, plus the effects chip dump. Keep the originals.</li>
+<li>Run Rosetta Patcher. It patches your dumps and writes the burn files.</li>
+<li>Burn two 27C512s and fit them. Put the originals back and it's a stock D-70 again.</li>
+</ol>
+<p>Every build runs through a simulator of the D-70's CPU and screen before it's written, so a bad patch is caught on the PC, not on the synth.</p>
+
+<h2>Community</h2>
+<p>Questions, hardware reports and ideas: <a href="https://discord.gg/R3CQkFdRtf">join the Discord</a>. More Rosetta OS mods: <a href="https://yuyoi.github.io/D110-rosetta-OS-v11/">D-110</a>, <a href="https://github.com/yuyoi/Sp-808-rosetta-looper-OS-">SP-808</a>, <a href="https://github.com/yuyoi/Akai-S2000-Rosetta-OS">Akai S2000</a>, <a href="https://github.com/yuyoi/super-Gp-16-Rosetta-OS">GP-16</a>, <a href="https://github.com/yuyoi/u110-romhex-studio">U-110</a>.</p>
+
+<footer>Made by JunkSmithWizard (JSW) together with Claude (Anthropic's AI). No Roland code or ROM data is included: the tools patch your own dumps. Roland and D-70 are names of Roland Corporation, used only to say what this works with. MIT licence.</footer>
+</div>
+</body>
+</html>
