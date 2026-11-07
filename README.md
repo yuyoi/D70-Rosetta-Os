@@ -18,8 +18,8 @@ and layer structure out, our own engine, menus and live controls in.
 It's the same Rosetta boot as the [SP-808 Rosetta OS](https://github.com/yuyoi/Sp-808-rosetta-looper-OS-) and the
 [Sony HR-GP5 Rosetta OS](https://github.com/yuyoi/Sony-HR-GP5-Rosetta-OS), now on a Roland synth.
 
-> **Work in progress.** v0.11 is burned and running on a real D-70: big effects pages, OFF in every effect,
-> REVERB as its own item, QUICK PLAY with a LAYERS row, and the fix for the sound cutting out after effect edits.
+> **Work in progress.** v0.12 is burned and running on a real D-70: big effects pages, OFF in every effect,
+> REVERB as its own item, SOUND SELECT with a LAYERS row, and the fix for the sound cutting out after effect edits.
 > Keep your original EPROMs.
 
 > **Made by JunkSmithWizard (JSW) together with Claude (Anthropic's AI).** Claude did the reverse engineering
@@ -77,7 +77,8 @@ uses the LCD's own font; the previews use a stand-in, and the tone names are mad
 | **DLM** in the SYNTH menu; **DSP LAB command 5** reads CPU memory (`dsp/dsplab.py mem ADDR`, `keys`) | built, sim checked |
 | **Big effects pages** (v0.11): the effect name drawn huge from the D-70's own font, params as bar meters. EFFECTS = SINGLE (one effect, OFF / CHORUS 1-5 / ours), DOUBLE (box A into box B, side by side), REVERB (own item, OFF = level 0). Every effect starts OFF | **works on hardware** (v0.11); the graphics sit a row off the labels on the real LCD, fix next |
 | **Sound-cut fix** (v0.11): the effects engine no longer uses registers the stock interrupts overwrite, waits out stock effect reloads and restores the full stock program when an effect goes OFF | **works on hardware** (v0.11), long-run test going |
-| **QUICK PLAY** = one sound, with a **LAYERS** row (1-4, L1 = the base) on the wave page | **works on hardware** (v0.11) |
+| **SOUND SELECT** (first SYNTH item, v0.12; was QUICK PLAY on the main menu) = one sound, with a **LAYERS** row (1-4, L1 = the base) | **works on hardware** (v0.11), moved in v0.12 |
+| **Boot into Rosetta**: the menu draws during the stock startup wait, so the stock play screen no longer shows (v0.12); a short stock screen right after the animation is still there | **works on hardware** (v0.12) |
 | Firmware map: banks, LCD, keys, sliders, parameters, free space ([docs/FINDINGS.md](docs/FINDINGS.md)) | first pass |
 
 ## Roadmap
@@ -175,6 +176,15 @@ By hand:
 | `tools/dsplab.py` | DSP LAB: the SysEx receiver in the firmware (`tools/test_dsplab.py` checks it in the sim) |
 | `dsp/` | PC tools for the effects chip: `dsplab.py`, `fxbox.py`, `hwab.py`, `hwscan.py`, `fxhw_master.py` |
 | `docs/DSP.md` | effects chip findings and the FX box |
+
+## Want to help?
+
+The D-70 is closed up for a while, so this is a good moment to jump in. Everything you need is here: the firmware map
+([docs/FINDINGS.md](docs/FINDINGS.md)), the effects chip notes ([docs/DSP.md](docs/DSP.md)), our own 80C196 disassembler
+and the simulator that checks every build before it's burned (`tools/sim.py`, `tools/boot_build.py`). Open ideas:
+kill the last bit of stock boot screen, ARP step-pattern recording, wave sequencing, a Rosetta data-transfer page, more
+effects recipes in `tools/fx2.py`. Bring hardware reports and pull requests to the
+[Discord](https://discord.gg/R3CQkFdRtf) or open an issue.
 
 ## Legal
 

@@ -497,7 +497,7 @@ def synth_check(img, p7, ui):
     step(user=True); step(SY.K_USER)                                   # open; the USER key event is ignored
     assert sim.lcd.homes.get(0x40) == SY.LCD_TEXT and sim.lcd.homes.get(0x42) == SY.LCD_GFX
     step(SY.K_ENT)                                                     # ROSETTA OS > SYNTH
-    step(SY.K_ENT); step(SY.K_ENT)                                     # SOUND > LAYER (L1)
+    step(SY.K_ENT)                                                     # SOUND SELECT > LAYER (L1)
     assert sim.ram[SY.PG - 0xC000] == SY.PIDX['wave']
     sim.ram[0xC600 + SY.LAYN - 0xC000] = 0; step(SY.K_INC)             # LAYERS 1 -> 2: Tone Switch L1 L2 on, L3 L4 off
     assert writes[-4:] == [(0x019E + 0x23 + k * 0x0D + 0x0A, int(k <= 1)) for k in range(4)] and sim.ram[0xC600 + SY.LAYN - 0xC000] == 1, writes[-4:]
@@ -521,7 +521,7 @@ def synth_check(img, p7, ui):
     step(SY.K_F5); step(SY.K_F5); step(SY.K_F5); step(SY.K_F5)         # sections L2 U3 U4 ALL
     n0 = len(writes); step(SY.K_INC)                                   # ALL: one INC writes four sections
     assert [w[0] for w in writes[n0:]] == [0x019E + 0x23 + k * 0x0D + 0x02 for k in range(4)]
-    step(SY.K_EXIT); step(SY.K_EXIT)                                   # LAYER > SOUND > SYNTH
+    step(SY.K_EXIT)                                                    # LAYER > SYNTH
     for _ in range(4): step(SY.K_DN, shot=False)                       # SOUND -> down to AMP ENV
     step(SY.K_DN); step(SY.K_ENT); step(SY.K_DN); step(SY.K_INC)       # AMP ENV, A LEVEL + 1
     step(SY.K_EXIT); step(SY.K_UP); step(SY.K_ENT)                     # AMP
@@ -537,7 +537,8 @@ def synth_check(img, p7, ui):
         assert rd[:min(n, len(rd))] == [base + i for i in range(min(n, len(rd)))], (hex(base), [hex(x) for x in rd[:4]])
         if mode: assert ('smp', 3, 2) in wreads           # the sample under middle C (zone 2)
         wreads.clear()
-    step(SY.K_EXIT); step(SY.K_UP); step(SY.K_ENT); step(SY.K_ENT)     # SOUND > LAYER (section ALL)
+    step(SY.K_EXIT); step(SY.K_UP); step(SY.K_ENT)                     # SYNTH > SOUND SELECT (the LAYER page)
+    assert sim.ram[SY.PG - 0xC000] == SY.PIDX['wave']; sim.ram[SY.SEC - 0xC000] = 4   # section ALL
     for _ in range(10): step(SY.K_DN, shot=False)                      # DLM  >
     wreads.clear(); step(SY.K_ENT); view_check()                       # the DLM page and its view
     assert sim.ram[SY.PG - 0xC000] == SY.PIDX['dlm']
@@ -604,14 +605,11 @@ def synth_check(img, p7, ui):
     step(SY.K_DN); step(SY.K_DN); assert sim.ram[SY.SELROW - 0xC000] == 4 and sim.ram[SY.SC0 - 0xC000] == 20
     step(SY.K_EXIT); step(SY.K_EXIT); step(SY.K_UP, shot=False)        # back on EFFECTS
     for _ in range(9): step(SY.K_UP, shot=False)
-    step(SY.K_UP); step(SY.K_ENT); step(SY.K_DN); step(SY.K_INC)       # SOUND, L2 level + 1
-    assert writes[-1] == (0x019E + 0x23 + 1 * 0x0D + 0x01, 73)
-    step(SY.K_EXIT); step(SY.K_EXIT)                                   # back to SYNTH, ROSETTA OS
-    sim.ram[SY.SEC - 0xC000] = 2; step(SY.K_DN); step(SY.K_ENT)          # QUICK PLAY: the wave page, L1, one layer
+    sim.ram[SY.SEC - 0xC000] = 2; step(SY.K_UP); step(SY.K_ENT)        # SYNTH > SOUND SELECT: the wave page, L1, one layer
     assert sim.ram[SY.PG - 0xC000] == SY.PIDX['wave'] and sim.ram[SY.SEC - 0xC000] == 0
     assert writes[-4:] == [(0x019E + 0x23 + k * 0x0D + 0x0A, int(k <= 0)) for k in range(4)] and sim.ram[0xC600 + SY.LAYN - 0xC000] == 0, writes[-4:]
-    step(SY.K_EXIT); step(SY.K_EXIT); step(SY.K_EXIT)                  # LAYER > SOUND > SYNTH > ROSETTA OS
-    step(SY.K_DN); step(SY.K_DN); step(SY.K_ENT); step(SY.K_EXIT)      # SETTINGS (back on QUICK PLAY)
+    step(SY.K_EXIT); assert pg() == SY.PIDX['synth']; step(SY.K_EXIT)  # SOUND SELECT > SYNTH > ROSETTA OS
+    step(SY.K_DN); step(SY.K_DN); step(SY.K_ENT); step(SY.K_EXIT)      # SETTINGS
     step(SY.K_DN); step(SY.K_ENT)                                      # ABOUT
     step(SY.K_EXIT); step(SY.K_UP); step(SY.K_UP); step(SY.K_ENT)      # TOOLS
     sim.reg[0x9C] = 0x00; sim.reg[0x9D] = 0x14; sim.reg[0xA0] = 0; sim.reg[0xA1] = 0; sim.reg[0xA2] = 0x0C
@@ -624,6 +622,7 @@ def synth_check(img, p7, ui):
     step(shot=False); assert calls[-1] == 'ui'
     sim.ram[SY.M_ON - 0xC000] = 2; n = len(calls); step(shot=False)     # boot open: waits, stock UI runs
     assert calls[n:] == ['ui'] and sim.ram[SY.M_ON - 0xC000] == 2
+    assert sim.lcd.homes[0x40] == SY.LCD_TEXT and sim.lcd.homes[0x42] == SY.LCD_GFX, 'boot wait must show our pages, not stock'
     sim.ram[SY.BOOTN - 0xC000] = 23; sim.ram[SY.BOOTHI - 0xC000] = 0xFF; sim.t1 = 0; step()     # last wrap
     assert sim.ram[SY.M_ON - 0xC000] == 1 and sim.lcd.homes[0x40] == SY.LCD_TEXT
     assert sim.bank == 0x02

@@ -219,26 +219,26 @@ VARIANTS = {('fxs', 0): (FX_TYPE, [[0]] + [_CHO] * 5 + [[0, 6, 13], [0, 7, 13], 
                          + [[0, 7, 12, 13]]),
             ('fxd', 0): (FX_DA, [[0, 3], [0, 1, 3], [0, 2, 3]]),
             ('fxd', 1): (FX_DB, [[0], [0, 1], [0, 2], [0, 3], [0, 4, 5], [0, 4, 5], [0, 4, 5]])}
-SYNTH_ITEMS = ['layers', 'pitch', 'filter', 'fenv', 'amp', 'aenv', 'lfo', 'dlm', 'fx', 'arp', 'midi']
-ROOT_LABELS = {'layers': 'SOUND', 'pitch': 'PITCH', 'filter': 'FILTER',
+SYNTH_ITEMS = ['wave', 'pitch', 'filter', 'fenv', 'amp', 'aenv', 'lfo', 'dlm', 'fx', 'arp', 'midi']
+ROOT_LABELS = {'wave': 'SOUND SELECT', 'pitch': 'PITCH', 'filter': 'FILTER',
                'fenv': 'FILTER ENV', 'amp': 'AMP', 'aenv': 'AMP ENV', 'lfo': 'LFO', 'dlm': 'DLM',
                'fx': 'EFFECTS', 'arp': 'ARP', 'midi': 'MIDI OUT'}
 PIDX = {p[0]: i for i, p in enumerate(PAGES)}
 LI_LINK, LI_ACT, LI_INFO = 0, 1, 2
 ACT_CLOSE, ACT_DUMP = 0, 1
 LIST_PAGES = {   # list page -> items (label, kind, arg); arg = page key, action number or info text
-    'rosetta': [('SYNTH', LI_LINK, 'synth'), ('QUICK PLAY', LI_LINK, 'wave'), ('TOOLS', LI_LINK, 'tools'), ('SETTINGS', LI_LINK, 'settings'),
+    'rosetta': [('SYNTH', LI_LINK, 'synth'), ('TOOLS', LI_LINK, 'tools'), ('SETTINGS', LI_LINK, 'settings'),
                 ('ABOUT', LI_LINK, 'about'),
                 ('EXIT TO D-70', LI_ACT, ACT_CLOSE)],
     'synth': [(ROOT_LABELS[k], LI_LINK, k) for k in SYNTH_ITEMS],
     'tools': [('DUMP IC6 TO MIDI', LI_ACT, ACT_DUMP)],
     'fx': [('SINGLE', LI_LINK, 'fxs'), ('DOUBLE', LI_LINK, 'fxd'), ('REVERB', LI_LINK, 'rev')],
-    'about': [('OS', LI_INFO, 'ROSETTA 0.10'), ('BY', LI_INFO, 'JSW + CLAUDE'), ('MASCOT', LI_INFO, 'HEX GIRL'),
+    'about': [('OS', LI_INFO, 'ROSETTA 0.12'), ('BY', LI_INFO, 'JSW + CLAUDE'), ('MASCOT', LI_INFO, 'HEX GIRL'),
               ('BASE', LI_INFO, 'ROLAND D-70 1.11'), ('OLD D-70', LI_INFO, 'HOLD EXIT AT BOOT')],
 }
 PARENT = {'rosetta': None, 'synth': 'rosetta', 'tools': 'rosetta', 'settings': 'rosetta', 'about': 'rosetta'}
 PARENT.update({k: 'synth' for k in SYNTH_ITEMS})
-PARENT.update({'wave': 'layers', 'fxs': 'fx', 'fxd': 'fx', 'rev': 'fx'})   # DLM: SYNTH item (also the LAYER page's last row)
+PARENT.update({'layers': 'synth', 'fxs': 'fx', 'fxd': 'fx', 'rev': 'fx'})   # DLM: SYNTH item (also the LAYER page's last row)
 RSAVE = 0xC4B0                 # list selection per page (16)
 SBUF_, TIMER1_ = 0x07, 0x0A
 
@@ -292,8 +292,9 @@ def emit(a):
     a.L('rt_stock'); stock(STOCK_UI, P2); a.ret()       # stock code expects ROM page 2 in the window
     a.L('rt_on')
     a.cmpbi(T, 2); J('JNE', 'rt_on1')                   # opened at boot: let the stock startup finish first
-    stock(STOCK_UI, P2)                                  # (about 2 s = 24 TIMER1 wraps of 87 ms)
-    a.ldb_abs(T, TIMER1_ + 1); lda(U, BOOTHI); sta(BOOTHI, T); a.cmpb(T, U); J('JC', 'rt_x')
+    stock(STOCK_UI, P2); a.lcall('lcd_mine')           # (about 2 s = 24 TIMER1 wraps of 87 ms); our pages stay
+    a.ldb_abs(T, TIMER1_ + 1); lda(U, BOOTHI); sta(BOOTHI, T); a.cmpb(T, U); J('JC', 'rt_x')   # on screen: no
+    a.lcall('draw')                                      # stock play screen flash, the menu shows at once
     lda(T, BOOTN); a.incb(T); sta(BOOTN, T); a.cmpbi(T, 24); J('JNE', 'rt_x')
     a.ldbi(T, 1); sta(M_ON, T); a.lcall('draw'); a.ret()
     a.L('rt_on1')                                        # sliders: slider 1 snaps the selected item on value pages
