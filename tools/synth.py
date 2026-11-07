@@ -90,8 +90,14 @@ RD4, RD6, RCA, RDE, R1A, R5F = 0xD4, 0xD6, 0xCA, 0xDE, 0x1A, 0x5F
 A_TONE, A_PSEC, A_PCOM, A_PERF, A_RAM, A_MOUT = 0, 1, 2, 3, 4, 5   # PERF = performance common (SysEx 0x00AD), RAM = our own
 MOUT_BASE = 0x00AD + 0xD5      # A_MOUT: performance MIDI OUT section s at MOUT_BASE + s * 7 (manual table 22)
 FX_LAST = 0xB7                 # PERF offsets 0xAD..0xB7 are the effects (reload the chip after a write)
+LAYN = 0x68                    # A_RAM: LAYERS on the LAYER page, 0-3 = 1-4 layers (C668)
+A_REV = 6                      # REVERB TYPE with OFF in front: OFF = perf reverb LEVEL 0 (item_read / item_write hooks)
+# big effect pages (SINGLE, REVERB, DOUBLE): names drawn big by gfx on page 0, params as label | bar | value
+FXN0, FXN1, FXBAR, FXM, FXI = 0xC680, 0xC68A, 0xC694, 0xC69E, 0xC69F   # names (10 each, FF end), bar fill px
+DFH, DFK = 0xC6A0, 0xC6A1      # per (text row 3-7, half) or FF, mode 0 / 1 single / 2 double, inverted slot + 1
+FB_S, FB_I, FB_N, FB_G, FB_X, FB_R = 0xC669, 0xC66A, 0xC66B, 0xC66C, 0xC66E, 0xC670   # gfx band work (page 0)
 FX_SEL, FX_TYPE, FX_DA, FX_DB = 0x30, 0x31, 0x35, 0x37   # fxfw2.py settings (A_RAM): SINGLE / DOUBLE, types
-N_CHO = 5                      # SINGLE TYPE 0-4 = the stock chorus types (box off)
+N_CHO = 5                      # SINGLE TYPE 0 = OFF, 1-5 = the stock chorus types (box off), 6+ = ours
 RAM_BASE = 0xC600              # A_RAM items: settings in RAM (arp.py), offset = item offset
 T_NUM, T_PLUS1, T_LIST, T_NOTE, T_MEDIA, T_NAME, T_WAVE, T_WNAME, T_LINK = 0, 1, 2, 3, 4, 5, 6, 7, 8   # LINK: aux = page
 K_ROOT, K_SPLIT, K_ENV, K_LAYERS, K_LIST = 0, 1, 2, 3, 4   # LIST: one scrolling column
@@ -106,10 +112,11 @@ LISTS = {'offon': ['OFF', 'ON'], 'tvf': ['LPF', 'BPF', 'HPF', 'BYPASS'], 'lfo': 
          'kmode': ['LAYER', 'SPLIT', 'ZONE'], 'ab': ['A', 'B'],
          'rev': ['ROOM 1', 'ROOM 2', 'ROOM 3', 'HALL 1', 'HALL 2', 'GATE', 'DELAY', 'X DELAY'],
          'cho': ['CHORUS 1', 'CHORUS 2', 'FB-CHORUS', 'FLANGER', 'SHORT DLY'], 'prepost': ['PRE REV', 'POST REV'],
+         'revo': ['OFF', 'ROOM 1', 'ROOM 2', 'ROOM 3', 'HALL 1', 'HALL 2', 'GATE', 'DELAY', 'X DELAY'],
          'arpm': ['UP', 'DOWN', 'UP-DOWN', 'RANDOM'], 'lock': ['ON', 'OFF'], 'dlmv': ['OFF  >', 'ON  >'],
-         'fxt': ['CHORUS 1', 'CHORUS 2', 'FB-CHORUS', 'FLANGER', 'SHORT DLY',      # SINGLE type: stock chorus,
-                 'DRIVE', 'DECIMATE', 'CRUSH', 'RECTIFY', 'LPF', 'BPF', 'HPF', 'LO-FI'],   # then fxfw2.SINGLE_NAMES
-         'fxa': ['DRIVE', 'DECIMATE'], 'fxb': ['DRIVE', 'CRUSH', 'RECTIFY', 'LPF', 'BPF', 'HPF']}   # fx2.DOUBLE_A / _B
+         'fxt': ['OFF', 'CHORUS 1', 'CHORUS 2', 'FB-CHORUS', 'FLANGER', 'SHORT DLY',   # SINGLE type: OFF, stock chorus,
+                 'DRIVE', 'DECIMATE', 'CRUSH', 'RECTIFY', 'LPF', 'BPF', 'HPF', 'LO-FI'],   # then fxfw2.SINGLE_NAMES[1:]
+         'fxa': ['OFF', 'DRIVE', 'DECIMATE'], 'fxb': ['OFF', 'DRIVE', 'CRUSH', 'RECTIFY', 'LPF', 'BPF', 'HPF']}   # fx2.DOUBLE_A / _B (THRU = OFF)
 LIST_IDS = {k: i for i, k in enumerate(LISTS)}
 
 
@@ -130,7 +137,8 @@ PAGES = [  # (key, title, kind, head0, head1, items0, items1); list pages take t
     ('about', 'ABOUT', K_ROOT, '', '', [], []),
     ('layers', 'SOUND', K_LAYERS, '', '', [], []),        # the four layers at a glance; ENTER = that layer
     ('wave', 'LAYER', K_LIST, '', '',                      # one layer, everything about it, one scrolling column
-     [it('BANK', A_TONE, 0x0A, T_WAVE, 0, 0, 1),        # I1 I2 I3 + cards; looks at the card slots again
+     [it('LAYERS', A_RAM, LAYN, T_PLUS1, 0, 3),         # 1-4 layers sound (patch Tone Switch), L1 = the base
+      it('BANK', A_TONE, 0x0A, T_WAVE, 0, 0, 1),        # I1 I2 I3 + cards; looks at the card slots again
       it('WAVE', A_TONE, 0x0A, T_WAVE, 0, 0),           # INC/DEC: waves inside the bank; number + name
       it('ZONE LOW', A_PSEC, 0x0B, T_NOTE, 0, 127), it('ZONE HIGH', A_PSEC, 0x0C, T_NOTE, 0, 127),
       it('LEVEL', A_PSEC, 0x01, T_NUM, 0, 127), it('PAN', A_PSEC, 0x09, T_NUM, 0, 14, 7),   # drawn as bars too
@@ -174,24 +182,25 @@ PAGES = [  # (key, title, kind, head0, head1, items0, items1); list pages take t
      [it('PITCH', A_TONE, 0x3B, T_NUM, 0, 127, 64), it('CUTOFF', A_TONE, 0x3C, T_NUM, 0, 127, 64),
       it('AMP', A_TONE, 0x3D, T_NUM, 0, 127, 64)]),
     ('fx', 'EFFECTS', K_ROOT, '', '', [], []),          # EFFECT/CTRL: SINGLE or DOUBLE (fxfw2.py, RAM 0xC630)
-    ('fxs', 'SINGLE', K_SPLIT, 'REVERB', 'CHORUS',      # right column: rows by TYPE (VARIANTS)
-     [it('TYPE', A_PERF, 0xAD, T_LIST, 0, 7, L('rev')), it('TIME', A_PERF, 0xAE, T_NUM, 0, 31),
-      it('LEVEL', A_PERF, 0xAF, T_NUM, 0, 31), it('FEEDBACK', A_PERF, 0xB0, T_NUM, 0, 31),
-      it('CHO OUT', A_PERF, 0xB2, T_LIST, 0, 1, L('prepost'))],
-     [it('TYPE', A_RAM, FX_TYPE, T_LIST, 0, 12, L('fxt')),                    # 0: < 5 also writes chorus TYPE
+    ('fxs', 'SINGLE', K_LIST, '', '',                   # ONE effect: rows by TYPE (VARIANTS), drawn big
+     [it('TYPE', A_RAM, FX_TYPE, T_LIST, 0, 13, L('fxt')),                    # 0: 1-5 also write chorus TYPE
       it('LEVEL', A_PERF, 0xB3, T_NUM, 0, 31), it('DELAY', A_PERF, 0xB4, T_NUM, 0, 31),
       it('RATE', A_PERF, 0xB5, T_NUM, 0, 31), it('DEPTH', A_PERF, 0xB6, T_NUM, 0, 31),
       it('FEEDBACK', A_PERF, 0xB7, T_NUM, 0, 62, 31),                           # 1-5: stock chorus
       it('DRIVE', A_RAM, 0x32, T_NUM, 0, 15), it('RATE', A_RAM, 0x32, T_PLUS1, 0, 15),
       it('BITS', A_RAM, 0x32, T_NUM, 2, 16), it('AMOUNT', A_RAM, 0x32, T_PLUS1, 0, 15),
       it('CUTOFF', A_RAM, 0x32, T_NUM, 0, 31), it('RESO', A_RAM, 0x33, T_NUM, 0, 15),
-      it('BITS', A_RAM, 0x33, T_NUM, 7, 16), it('MIX', A_RAM, 0x34, T_NUM, 0, 15)]),   # 6-13
+      it('BITS', A_RAM, 0x33, T_NUM, 7, 16), it('MIX', A_RAM, 0x34, T_NUM, 0, 15)], []),   # 6-13
     ('fxd', 'DOUBLE', K_SPLIT, 'BOX A', 'BOX B',
-     [it('TYPE', A_RAM, FX_DA, T_LIST, 0, 1, L('fxa')), it('DRIVE', A_RAM, 0x36, T_NUM, 0, 15),
+     [it('TYPE', A_RAM, FX_DA, T_LIST, 0, 2, L('fxa')), it('DRIVE', A_RAM, 0x36, T_NUM, 0, 15),
       it('RATE', A_RAM, 0x36, T_PLUS1, 0, 15), it('MIX', A_RAM, 0x3A, T_NUM, 0, 15)],
-     [it('TYPE', A_RAM, FX_DB, T_LIST, 0, 5, L('fxb')), it('DRIVE', A_RAM, 0x38, T_NUM, 0, 15),
+     [it('TYPE', A_RAM, FX_DB, T_LIST, 0, 6, L('fxb')), it('DRIVE', A_RAM, 0x38, T_NUM, 0, 15),
       it('BITS', A_RAM, 0x38, T_NUM, 7, 16), it('AMOUNT', A_RAM, 0x38, T_PLUS1, 0, 15),
       it('CUTOFF', A_RAM, 0x38, T_NUM, 0, 31), it('RESO', A_RAM, 0x39, T_NUM, 0, 15)]),
+    ('rev', 'REVERB', K_LIST, '', '',                   # the stock reverb, drawn big; TYPE OFF = LEVEL 0
+     [it('TYPE', A_REV, 0xAD, T_LIST, 0, 8, L('revo')), it('TIME', A_PERF, 0xAE, T_NUM, 0, 31),
+      it('LEVEL', A_PERF, 0xAF, T_NUM, 0, 31), it('FEEDBACK', A_PERF, 0xB0, T_NUM, 0, 31),
+      it('CHO OUT', A_PERF, 0xB2, T_LIST, 0, 1, L('prepost'))], []),
     ('arp', 'ARP', K_SPLIT, 'ARPEGGIO', '',             # arp.py settings, RAM 0xC600
      [it('ARP', A_RAM, 0, T_LIST, 0, 1, L('offon')), it('MODE', A_RAM, 1, T_LIST, 0, 3, L('arpm')),
       it('OCTAVES', A_RAM, 2, T_PLUS1, 0, 3), it('TEMPO', A_RAM, 3, T_NUM, 40, 240),
@@ -206,10 +215,10 @@ PAGES = [  # (key, title, kind, head0, head1, items0, items1); list pages take t
 ]
 # rows shown per type: (page, column) -> (RAM offset of the type, item indices for each type value)
 _CHO, _FLT = [0, 1, 2, 3, 4, 5], [0, 10, 11, 13]
-VARIANTS = {('fxs', 1): (FX_TYPE, [_CHO] * 5 + [[0, 6, 13], [0, 7, 13], [0, 8, 13], [0, 9, 13]] + [_FLT] * 3
+VARIANTS = {('fxs', 0): (FX_TYPE, [[0]] + [_CHO] * 5 + [[0, 6, 13], [0, 7, 13], [0, 8, 13], [0, 9, 13]] + [_FLT] * 3
                          + [[0, 7, 12, 13]]),
-            ('fxd', 0): (FX_DA, [[0, 1, 3], [0, 2, 3]]),
-            ('fxd', 1): (FX_DB, [[0, 1], [0, 2], [0, 3], [0, 4, 5], [0, 4, 5], [0, 4, 5]])}
+            ('fxd', 0): (FX_DA, [[0, 3], [0, 1, 3], [0, 2, 3]]),
+            ('fxd', 1): (FX_DB, [[0], [0, 1], [0, 2], [0, 3], [0, 4, 5], [0, 4, 5], [0, 4, 5]])}
 SYNTH_ITEMS = ['layers', 'pitch', 'filter', 'fenv', 'amp', 'aenv', 'lfo', 'dlm', 'fx', 'arp', 'midi']
 ROOT_LABELS = {'layers': 'SOUND', 'pitch': 'PITCH', 'filter': 'FILTER',
                'fenv': 'FILTER ENV', 'amp': 'AMP', 'aenv': 'AMP ENV', 'lfo': 'LFO', 'dlm': 'DLM',
@@ -223,13 +232,13 @@ LIST_PAGES = {   # list page -> items (label, kind, arg); arg = page key, action
                 ('EXIT TO D-70', LI_ACT, ACT_CLOSE)],
     'synth': [(ROOT_LABELS[k], LI_LINK, k) for k in SYNTH_ITEMS],
     'tools': [('DUMP IC6 TO MIDI', LI_ACT, ACT_DUMP)],
-    'fx': [('SINGLE', LI_LINK, 'fxs'), ('DOUBLE', LI_LINK, 'fxd')],
+    'fx': [('SINGLE', LI_LINK, 'fxs'), ('DOUBLE', LI_LINK, 'fxd'), ('REVERB', LI_LINK, 'rev')],
     'about': [('OS', LI_INFO, 'ROSETTA 0.10'), ('BY', LI_INFO, 'JSW + CLAUDE'), ('MASCOT', LI_INFO, 'HEX GIRL'),
               ('BASE', LI_INFO, 'ROLAND D-70 1.11'), ('OLD D-70', LI_INFO, 'HOLD EXIT AT BOOT')],
 }
 PARENT = {'rosetta': None, 'synth': 'rosetta', 'tools': 'rosetta', 'settings': 'rosetta', 'about': 'rosetta'}
 PARENT.update({k: 'synth' for k in SYNTH_ITEMS})
-PARENT.update({'wave': 'layers', 'fxs': 'fx', 'fxd': 'fx'})   # DLM: SYNTH item (also the LAYER page's last row)
+PARENT.update({'wave': 'layers', 'fxs': 'fx', 'fxd': 'fx', 'rev': 'fx'})   # DLM: SYNTH item (also the LAYER page's last row)
 RSAVE = 0xC4B0                 # list selection per page (16)
 SBUF_, TIMER1_ = 0x07, 0x0A
 
@@ -401,10 +410,12 @@ def emit(a):
     a.ldb_idx(T, Q, 3); sta(PG, T); a.lcall('fx_pick')
     a.L('pg_clr'); a.clrb(T); sta(SEL, T); sta(COL, T); sta(RSEL, T); sta(RTOP, T); a.ret()
     a.L('fx_pick')                                       # T = page: SINGLE / DOUBLE FX make that one active
+    a.cmpbi(T, PIDX['wave']); J('JNE', 'fk_0'); a.ldi_l(R1A, 'qp_go'); a.lcall(P4); a.ret()   # QUICK PLAY: L1 only
+    a.L('fk_0')
     a.ldbi(U, 1); a.cmpbi(T, PIDX['fxd']); J('JE', 'fk_s'); a.cmpbi(T, PIDX['fxs']); J('JNE', 'fk_x')
     lda(U, RAM_BASE + FX_SEL); a.cmpbi(U, 0); J('JE', 'fk_s'); lda(U, RAM_BASE + FX_TYPE); a.clrb(T)
-    sta(RAM_BASE + FX_SEL, T); a.cmpbi(U, N_CHO); J('JC', 'fk_x')
-    stock(FX_RELOAD, 0x1053); a.ret()                    # DOUBLE -> SINGLE CHORUS: stock program back
+    sta(RAM_BASE + FX_SEL, T); a.cmpbi(U, N_CHO + 1); J('JC', 'fk_x'); a.cmpbi(U, 0); J('JE', 'fk_x')
+    stock(FX_RELOAD, 0x1053); a.ret()                    # DOUBLE -> SINGLE CHORUS 1-5: stock program back
     a.L('fk_s'); sta(RAM_BASE + FX_SEL, U)
     a.L('fk_x'); a.ret()
     a.L('kr5'); a.cmpbi(T, LI_ACT); J('JNE', 'kpr')
@@ -494,7 +505,12 @@ def emit(a):
     a.L('ad_off'); lda(T, IOFF); a.ldbze(IDX, T); a.add(W, IDX); stw(ADDR, W); a.ret()
 
     a.L('item_read')                                     # VAL = value at the item for section SECW
-    lda(T, IAREA); a.cmpbi(T, A_RAM); J('JNE', 'ir1')
+    lda(T, IAREA); a.cmpbi(T, A_REV); J('JNE', 'ir0')     # REVERB TYPE: LEVEL 0 = OFF, else perf TYPE + 1
+    a.ldbi(T, A_PERF); sta(IAREA, T); a.ldbi(T, 0xAF); sta(IOFF, T); a.lcall('item_read')
+    lda(T, VAL); a.cmpbi(T, 0); J('JE', 'ir_rv')
+    a.ldbi(T, 0xAD); sta(IOFF, T); a.lcall('item_read'); lda(T, VAL); a.incb(T); sta(VAL, T)
+    a.L('ir_rv'); a.ldbi(T, A_REV); sta(IAREA, T); a.ldbi(T, 0xAD); sta(IOFF, T); a.ret()
+    a.L('ir0'); a.cmpbi(T, A_RAM); J('JNE', 'ir1')
     lda(T, IOFF); a.ldbze(IDX, T); a.ldb_lidx(T, IDX, RAM_BASE); sta(VAL, T); a.ret()
     a.L('ir1'); a.lcall('addr'); ldw(RD4, ADDR); a.clr(RD6); stock(RD, P5); sta(VAL, RCA); a.ret()
     a.L('write1')                                        # VAL -> item for section SECW (no apply)
@@ -502,9 +518,18 @@ def emit(a):
     lda(T, IOFF); a.ldbze(IDX, T); lda(T, VAL); a.stb_lidx(IDX, RAM_BASE, T); a.ret()
     a.L('wr1'); a.lcall('addr'); ldw(RD4, ADDR); a.clr(RD6); lda(RCA, VAL); stock(WR, P5); a.ret()
     a.L('item_write')                                    # VAL -> current section, or all four, then apply
-    lda(T, IAREA); a.cmpbi(T, A_RAM); J('JNE', 'iw0'); lda(T, IOFF); a.cmpbi(T, FX_TYPE); J('JNE', 'iw0')
-    lda(T, VAL); sta(RAM_BASE + FX_TYPE, T); a.cmpbi(T, N_CHO); J('JC', 'iw0')
-    a.ldbi(T, A_PERF); sta(IAREA, T); a.ldbi(T, 0xB1); sta(IOFF, T)   # CHORUS n: the stock chorus TYPE
+    lda(T, IAREA); a.cmpbi(T, A_REV); J('JNE', 'iw_n')    # REVERB TYPE: OFF -> LEVEL 0; a type -> perf TYPE n-1,
+    a.ldbi(T, A_PERF); sta(IAREA, T); lda(T, VAL); sta(DFK, T)   # and LEVEL 24 first if it was off
+    a.ldbi(T, 0xAF); sta(IOFF, T); a.clrb(T); sta(SECW, T); a.lcall('item_read')
+    lda(T, DFK); a.cmpbi(T, 0); J('JNE', 'iw_r0'); sta(VAL, T); a.ljmp('iw0')   # OFF: LEVEL 0 (apply + reload)
+    a.L('iw_r0'); lda(T, VAL); a.cmpbi(T, 0); J('JNE', 'iw_rt'); a.ldbi(T, 24); sta(VAL, T); a.lcall('write1')
+    a.L('iw_rt'); lda(T, DFK); a.decb(T); sta(VAL, T); a.ldbi(T, 0xAD); sta(IOFF, T); a.ljmp('iw0')
+    a.L('iw_n')
+    lda(T, IAREA); a.cmpbi(T, A_RAM); J('JNE', 'iw0'); lda(T, IOFF); a.cmpbi(T, LAYN); J('JE', 'iw_lay')
+    a.cmpbi(T, FX_TYPE); J('JNE', 'iw0')
+    lda(T, VAL); sta(RAM_BASE + FX_TYPE, T); a.cmpbi(T, N_CHO + 1); J('JC', 'iw0'); a.cmpbi(T, 0); J('JE', 'iw0')
+    a.decb(T); sta(VAL, T)                               # CHORUS n (TYPE 1-5): the stock chorus TYPE n-1
+    a.ldbi(T, A_PERF); sta(IAREA, T); a.ldbi(T, 0xB1); sta(IOFF, T)
     a.L('iw0'); a.ldbi(T, 0xFF); sta(LZ_PG, T); a.clrb(RDE)
     lda(T, SEC); a.cmpbi(T, 4); J('JE', 'iw_all'); sta(SECW, T); a.lcall('write1'); a.sjmp('iw_ap')
     a.L('iw_all'); a.clrb(T); sta(SECW, T)
@@ -512,9 +537,14 @@ def emit(a):
     a.L('iw_ap'); stock(APPLY, P2)
     lda(T, IAREA); a.cmpbi(T, A_PERF); J('JNE', 'iw_r'); lda(T, IOFF); a.cmpbi(T, FX_LAST + 1); J('JC', 'iw_r')
     stock(FX_RELOAD, 0x1053)                             # effects chip: reload
-    a.L('iw_r'); lda(T, RAM_BASE + FX_DA); a.cmpbi(T, 0); J('JNE', 'iw_x')   # box 1 DRIVE: no DRIVE / CRUSH after
-    lda(T, RAM_BASE + FX_DB); a.cmpbi(T, 2); J('JC', 'iw_x'); a.ldbi(T, 2); sta(RAM_BASE + FX_DB, T)
+    a.L('iw_r'); lda(T, RAM_BASE + FX_DB); lda(U, RAM_BASE + FX_DA)   # DOUBLE pairs fx2.pair_ok refuses -> box B OFF
+    a.cmpbi(T, 2); J('JNE', 'iw_r1'); a.cmpbi(U, 2); J('JE', 'iw_x'); a.sjmp('iw_r2')   # CRUSH only after DECIMATE
+    a.L('iw_r1'); a.cmpbi(T, 1); J('JNE', 'iw_x'); a.cmpbi(U, 1); J('JNE', 'iw_x')     # DRIVE > DRIVE
+    a.L('iw_r2'); a.clrb(T); lda(U, IOFF); a.cmpbi(U, FX_DB); J('JNE', 'iw_r3')    # box A changed: B OFF
+    lda(U, KEYC); a.cmpbi(U, K_INC); J('JNE', 'iw_r3'); a.ldbi(T, 3)    # B turned up: on to RECTIFY, down: OFF
+    a.L('iw_r3'); sta(RAM_BASE + FX_DB, T)
     a.L('iw_x'); a.ret()
+    a.L('iw_lay'); a.ldi_l(R1A, 'lay_set'); a.lcall(P4); a.ret()   # LAYERS: page 4 writes the four Tone Switches
 
     # ================= value text =================
     a.L('fmt')                                           # VAL, ITYPE, IAUX -> NB (ASCII, FF end); Q -> text
@@ -573,6 +603,9 @@ def emit(a):
     # ================= drawing =================
     a.L('draw')
     a.lcall('lcd_mine'); a.lcall('page_ptr')
+    a.clrb(T); sta(FXM, T); lda(T, PG)                   # big effect pages draw themselves (gfx reads FXM)
+    for k in ('fxs', 'rev', 'fxd'):
+        a.cmpbi(T, PIDX[k]); J('JNE', 'dfz_' + k); a.ljmp('draw_fx'); a.L('dfz_' + k)
     a.clrb(T); sta(ROW, T)
     # row 0: title + section chips
     a.lcall('tclr'); ldw(P, PAGEP); a.ld_idx(Q, P, 0); a.ldbi(T, 1); a.lcall('put')
@@ -588,9 +621,9 @@ def emit(a):
     a.L('dk2'); a.cmpbi(T, K_ENV); J('JNE', 'dk3'); a.lcall('draw_env_text'); a.sjmp('dgfx')
     a.L('dk3'); a.cmpbi(T, K_LIST); J('JNE', 'dk4'); a.lcall('draw_list'); a.sjmp('dgfx')
     a.L('dk4'); a.lcall('draw_layers')
-    a.L('dgfx'); a.lcall('gfx')
+    a.L('dgfx'); a.ldi_l(R1A, 'gfx'); a.lcall('p0stub')        # graphics: ROM page 0
     lda(T, PG); a.cmpbi(T, PIDX['dlm']); J('JNE', 'dg1'); a.ldi_l(R1A, 'wave_view'); a.lcall(P4); a.ret()
-    a.L('dg1'); lda(T, KIND); a.cmpbi(T, K_ENV); J('JNE', 'dret'); a.lcall('env_lines')
+    a.L('dg1'); lda(T, KIND); a.cmpbi(T, K_ENV); J('JNE', 'dret'); a.ldi_l(R1A, 'env_lines'); a.lcall('p0stub')
     a.L('dret'); a.ret()
 
     a.L('draw_root')                                     # rows 1-7: list items (links >, info text)
@@ -622,6 +655,47 @@ def emit(a):
     lda(T, SEL); a.addbi(T, 2); sta(SELROW, T)
     lda(T, COL); a.cmpbi(T, 0); J('JNE', 'ds2'); a.clrb(T); sta(SC0, T); a.ldbi(T, 18); sta(SC1, T); a.ret()
     a.L('ds2'); a.ldbi(T, 20); sta(SC0, T); a.ldbi(T, 39); sta(SC1, T); a.ret()
+
+    a.L('draw_fx')                                       # SINGLE / REVERB: 1 slot, DOUBLE: 2 (columns A / B)
+    lda(T, PG); a.ldbi(U, 1); a.cmpbi(T, PIDX['fxd']); J('JNE', 'dfx0'); a.ldbi(U, 2)
+    a.L('dfx0'); sta(FXM, U); a.clrb(T); sta(DFH, T)
+    a.L('dfx1'); lda(T, DFH); a.clrb(U); a.lcall('item_load'); a.lcall('item_value')   # Q = the TYPE's name
+    a.ldi(P, FXN0); lda(T, DFH); a.cmpbi(T, 0); J('JE', 'dfx2'); a.ldi(P, FXN1)
+    a.L('dfx2'); a.ldbi(C, 10)
+    a.L('dfx3'); a.ldb_pi(T, Q); a.stb_pi(P, T); a.cmpbi(T, 0xFF); J('JE', 'dfx4'); a.decb(C); J('JNE', 'dfx3')
+    a.L('dfx4'); lda(T, DFH); a.incb(T); sta(DFH, T); lda(U, FXM); a.cmpb(T, U); J('JNE', 'dfx1')
+    a.ldbi(T, 0xFF); sta(SELROW, T); a.clrb(T); sta(FXI, T)    # selection: the name (inverted) or a param cell
+    a.ldi(P, FXBAR); a.ldbi(C, 10); a.ldbi(U, 0xFF)
+    a.L('dfx5'); a.stb_pi(P, U); a.decb(C); J('JNE', 'dfx5')
+    lda(T, SEL); a.cmpbi(T, 0); J('JNE', 'dfx6'); lda(T, COL); a.incb(T); sta(FXI, T); a.sjmp('dfx9')
+    a.L('dfx6'); a.decb(T); lda(U, FXM); a.cmpbi(U, 2); J('JE', 'dfx7')
+    a.ldb(U, T); a.shrb(U, 1); a.addbi(U, 4); sta(SELROW, U); a.andbi(T, 1); a.sjmp('dfx8')   # single: 2 per row
+    a.L('dfx7'); a.addbi(T, 3); sta(SELROW, T); lda(T, COL)                                   # double: own column
+    a.L('dfx8'); a.clrb(U); a.cmpbi(T, 0); J('JE', 'dfx8a'); a.ldbi(U, 20)
+    a.L('dfx8a'); sta(SC0, U); a.addbi(U, 19); sta(SC1, U)
+    a.L('dfx9'); a.clrb(T); sta(ROW, T)
+    a.L('dfr'); a.lcall('tclr'); a.clrb(T); sta(DFH, T)
+    a.L('dfh')                                           # this row's cell in half DFH: item k of column c
+    lda(T, FXM); lda(U, ROW); a.cmpbi(T, 2); J('JE', 'dfh_d')
+    a.subbi(U, 4); J('JNC', 'dfh_n'); a.addb(U, U); lda(T, DFH); a.addb(U, T); a.incb(U); a.clrb(T); a.sjmp('dfh_k')
+    a.L('dfh_d'); a.subbi(U, 2); J('JNC', 'dfh_n'); J('JE', 'dfh_n'); lda(T, DFH)
+    a.L('dfh_k'); sta(DFK, U); a.lcall('vcount'); lda(T, DFK); a.cmpb(T, U); J('JC', 'dfh_n')
+    a.ldb(U, T); lda(T, FXM); a.cmpbi(T, 2); J('JNE', 'dfh_c'); lda(T, DFH); a.sjmp('dfh_l')
+    a.L('dfh_c'); a.clrb(T)
+    a.L('dfh_l'); a.lcall('item_load')
+    a.ld_lidx(Q, 0, ITEMP); a.ld_idx(Q, Q, 0); lda(T, DFH); a.ldbi(U, 1); a.cmpbi(T, 0); J('JE', 'dfl1'); a.ldbi(U, 21)
+    a.L('dfl1'); a.ldb(T, U); a.lcall('put')
+    a.lcall('item_value'); lda(T, DFH); a.ldbi(U, 19); a.cmpbi(T, 0); J('JE', 'dfl2'); a.ldbi(U, 39)
+    a.L('dfl2'); a.ldb(T, U); a.lcall('rput')
+    lda(T, ITYPE); a.cmpbi(T, T_PLUS1 + 1); J('JC', 'dfh_n')    # numbers get a bar: fill = (VAL-MIN)*36/(MAX-MIN)
+    lda(T, VAL); lda(U, IMIN); a.subb(T, U); J('JNC', 'dfh_n'); lda(V, IMAX); a.subb(V, U); J('JE', 'dfh_n')
+    a.ldbi(U, 36); a.b(0x5C, U, T, W); a.b(0x9C, V, W)  # MULUB W, T, U ; DIVUB W, V
+    a.cmpbi(W, 36); J('JNH', 'dfb1'); a.ldbi(W, 36)
+    a.L('dfb1'); lda(T, ROW); a.subbi(T, 3); J('JNC', 'dfh_n'); a.addb(T, T); lda(U, DFH); a.addb(T, U)
+    a.ldbze(IDX, T); a.stb_lidx(IDX, FXBAR, W)
+    a.L('dfh_n'); lda(T, DFH); a.incb(T); sta(DFH, T); a.cmpbi(T, 2); J('JNE', 'dfh')
+    a.lcall('tpush'); lda(T, ROW); a.incb(T); sta(ROW, T); a.cmpbi(T, 8); J('JNE', 'dfr')
+    a.ljmp('dgfx')
 
     a.L('item_value')                                    # Q -> value text of the loaded item (L1 / section)
     lda(T, SEC); a.cmpbi(T, 4); J('JNE', 'iv0'); a.clrb(T)
@@ -712,9 +786,78 @@ def emit(a):
     a.L('dl4'); a.addbi(T, 2); sta(SELROW, T); a.clrb(T); sta(SC0, T); a.ldbi(T, 39); sta(SC1, T); a.ret()
 
     # ================= graphics layer: one pass, byte by byte =================
+    a.L('dump')
+    a.ldbi(T, 7); sta(ROW, T); a.lcall('tclr'); a.ldi_l(Q, 's_sending'); a.ldbi(T, 1); a.lcall('put')
+    a.lcall('tpush')
+    a.ldi_l(R1A, 'dump_send'); a.lcall(P4); a.ret()     # the sending runs from ROM page 4 (emit_p4)
+
+    # ================= LCD =================
+    a.L('wst'); a.ldb_abs(ST, LCD_C); a.andbi(ST, 3); a.cmpbi(ST, 3); J('JNE', 'wst'); a.ret()
+    a.L('wauto'); a.ldb_abs(ST, LCD_C); a.jbc(ST, 3, 'wauto'); a.ret()
+    a.L('cmd'); a.lcall('wst'); a.stb_abs(LCD_C, X); a.ret()
+    a.L('dat'); a.lcall('wst'); a.stb_abs(LCD_D, X); a.ret()
+    a.L('setaddr'); a.ldb(X, W); a.lcall('dat'); a.ldb(X, W + 1); a.lcall('dat'); a.ldbi(X, 0x24); a.sjmp('cmd')
+    emit_wave(a, J, lda, sta, ldw, stw)
+
+
+def emit_p4(a):
+    """TOOLS > DUMP IC6, the sending part: ROM page 4 (reached through the page-4 stub; IC6_RD puts R54 = 4
+    back in the window). 256 SysEx blocks F0 7D 49 hi lo <128 bytes as nibbles> F7, 0.4 ms per byte."""
+    J = a.jcc
+    def lda(r, addr): a.ldb_abs(r, addr)
+    def sta(addr, r): a.stb_abs(addr, r)
+    def ldw(r, addr): a.ld_lidx(r, 0, addr)
+    def stw(addr, r): a.st_lidx(0, addr, r)
+    def far(label): a.ldi_l(R1A, label); a.lcall(0x105F)
+    emit_wave_view(a, J, lda, sta, ldw, stw, far)
+    a.L('qp_go'); a.clrb(T); sta(SEC, T); sta(VAL, T)     # QUICK PLAY: layer L1, one layer
+    a.L('lay_set'); lda(T, VAL); sta(RAM_BASE + LAYN, T)  # LAYERS n (0-3): Tone Switch on for L1..L(n+1), off above
+    a.ldbi(T, A_PSEC); sta(IAREA, T); a.ldbi(T, 0x0A); sta(IOFF, T); a.clrb(T)
+    a.L('ly_l'); sta(SECW, T); a.clrb(U); lda(V, RAM_BASE + LAYN); a.cmpb(V, T); J('JNC', 'ly_w'); a.incb(U)
+    a.L('ly_w'); sta(VAL, U); far('write1'); lda(T, SECW); a.incb(T); a.cmpbi(T, 4); J('JNE', 'ly_l')
+    a.ldi(R1A, APPLY); a.lcall(P2); a.ret()
+    # stock key read, filtered: stock acts on a key in the same pass it scans it, so PCM CARD (menu closed) is
+    # taken here, before any stock screen sees it; rt_ui opens the wave page on its next pass
+    a.L('gk_hook'); a.lcall(GK_STOCK); J('JNC', 'gk_r')
+    a.cmpbi(T, K_CARDB); J('JNE', 'gk_s')
+    lda(IDX, M_ON); a.cmpbi(IDX, 0); J('JNE', 'gk_s')
+    a.ldbi(IDX, 1); sta(CARDQ, IDX); a.b(0xF8); a.ret()   # CLRC: no key for stock
+    a.L('gk_s'); a.b(0xF9)                               # SETC: the key, as stock returned it
+    a.L('gk_r'); a.ret()
+    a.L('dump_send')
+    a.clrb(T); sta(I, T)                                 # I = block 0..255 (128 bytes each)
+    a.L('db')
+    for v in (0xF0, 0x7D, 0x49): a.ldbi(X, v); a.lcall('tx')
+    lda(X, I); a.shrb(X, 7); a.lcall('tx'); lda(X, I); a.andbi(X, 0x7F); a.lcall('tx')
+    a.clrb(T); sta(NI, T)
+    a.L('dn')
+    lda(T, I); a.ldbze(W, T); a.andbi(W, 0x7F); a.shl(W, 7); lda(T, NI); a.ldbze(IDX, T); a.add(W, IDX)
+    a.addi(W, 0x8000); lda(T, I); a.shrb(T, 7); a.orbi(T, 0x20)
+    a.lcall(IC6_RD)                                      # fixed-ROM helper: bank T, address W -> V
+    sta(VAL, V); a.ldb(X, V); a.shrb(X, 4); a.lcall('tx'); lda(X, VAL); a.andbi(X, 0x0F); a.lcall('tx')
+    lda(T, NI); a.incb(T); sta(NI, T); a.cmpbi(T, 128); J('JNE', 'dn')
+    a.ldbi(X, 0xF7); a.lcall('tx')
+    lda(T, I); a.incb(T); sta(I, T); a.cmpbi(T, 0); J('JNE', 'db'); a.ret()
+    a.L('tx'); a.b(0xC4, SBUF_, X); a.ld(C, TIMER1_)    # 0.4 ms per byte (31250 baud = 0.32 ms)
+    a.L('txw'); a.ld(P, TIMER1_); a.sub(P, C); a.cmpi(P, 300); J('JNC', 'txw'); a.ret()
+
+
+# ================= data: page tables, items and strings, packed into the freed page-7 blocks =================
+P0_ORG, P0_END = 0x8840, 0x8FFF   # ROM page 0 (file 0x0840-0x0FFF, after the boot stream; the old boot menu was here)
+
+
+def emit_p0(a):
+    """the menu's graphics pass on ROM page 0 (reached through p0stub in fixed ROM): gfx (all 64 pixel rows),
+    zone strips, LEVEL / PAN bars, envelope lines, Bresenham segments + plot; own copies of the LCD helpers"""
+    J = a.jcc
+    def lda(r, addr): a.ldb_abs(r, addr)
+    def sta(addr, r): a.stb_abs(addr, r)
+    def ldw(r, addr): a.ld_lidx(r, 0, addr)
+    def stw(addr, r): a.st_lidx(0, addr, r)
     a.L('gfx')
     a.clrb(T); sta(ROW, T)                               # ROW = pixel row y (0..63)
-    a.L('gy'); a.clrb(T); sta(I, T)                      # I = byte column (0..39)
+    a.L('gy'); lda(T, FXM); a.cmpbi(T, 0); J('JE', 'gy0'); a.lcall('fx_band'); J('JNC', 'gy0'); a.ljmp('g_wr')
+    a.L('gy0'); a.clrb(T); sta(I, T)                     # I = byte column (0..39)
     a.L('gx'); a.clrb(X)
     lda(T, ROW); a.ldb(U, T); a.shrb(U, 3); a.andbi(T, 7)    # U = text row, T = y in row
     lda(V, I)
@@ -727,7 +870,8 @@ def emit(a):
     a.L('g_c1'); a.ldb(Z, C); a.addb(Z, C); a.addb(Z, C); a.addbi(Z, 28)        # chip column = 28 + 3*sec
     a.cmpb(V, Z); J('JNC', 'g_out'); a.incb(Z); a.incb(Z); a.cmpb(V, Z); J('JC', 'g_out'); a.lcall('g_inv')
     a.sjmp('g_out')
-    a.L('g_body'); lda(C, KIND)
+    a.L('g_body'); lda(C, FXM); a.cmpbi(C, 0); J('JE', 'g_bk'); a.lcall('g_fx'); a.sjmp('g_sel')
+    a.L('g_bk'); lda(C, KIND)
     a.cmpbi(C, K_SPLIT); J('JNE', 'g_b2')
     a.cmpbi(V, 19); J('JNE', 'g_s1'); a.ldbi(X, 0x01); a.sjmp('g_sel')     # divider x = 119
     a.L('g_s1'); a.cmpbi(U, 1); J('JNE', 'g_sel'); a.cmpbi(T, 7); J('JNE', 'g_sel'); a.ldbi(X, 0x3F)
@@ -747,7 +891,7 @@ def emit(a):
     a.lcall('g_inv')
     a.L('g_out'); lda(T, I); a.ldbze(IDX, T); a.stb_lidx(IDX, GBUF, X)
     lda(T, I); a.incb(T); sta(I, T); a.cmpbi(T, 40); J('JNE', 'gx')
-    lda(T, ROW); a.ldbze(W, T); a.b(0x6D, 40, 0, W); a.addi(W, LCD_GFX); a.ldi(P, GBUF); a.lcall('row40')
+    a.L('g_wr'); lda(T, ROW); a.ldbze(W, T); a.b(0x6D, 40, 0, W); a.addi(W, LCD_GFX); a.ldi(P, GBUF); a.lcall('z_row40')
     lda(T, ROW); a.incb(T); sta(ROW, T); a.cmpbi(T, 64); J('JNE', 'gy')
     a.ret()
     a.L('g_inv'); a.b(0x95, 0x3F, X); a.ret()           # XORB X, #3F
@@ -831,68 +975,110 @@ def emit(a):
     ldw(Q, LY0); a.b(0x6D, 40, 0, Q); a.ldbze(P, W); a.add(P, Q); a.addi(P, LCD_GFX)   # long result: R24 (4-aligned)
     a.ldbi(T, 5); a.subb(T, W + 1); a.ldbi(U, 1)        # U = pixel mask (bit 5 = leftmost)
     a.L('pl1'); a.cmpbi(T, 0); J('JE', 'pl2'); a.addb(U, U); a.decb(T); a.sjmp('pl1')
-    a.L('pl2'); a.ld(W, P); a.b(0xFA); a.lcall('setaddr')   # read, OR, write back: the panel's T6963C
-    a.ldbi(X, 0xC5); a.lcall('cmd'); a.lcall('wst'); a.ldb_abs(X, LCD_D)   # ignores bit set / reset
-    a.orb(X, U); a.lcall('dat'); a.ldbi(X, 0xC4); a.lcall('cmd'); a.b(0xFB)
+    a.L('pl2'); a.ld(W, P); a.b(0xFA); a.lcall('z_setaddr')   # read, OR, write back: the panel's T6963C
+    a.ldbi(X, 0xC5); a.lcall('z_cmd'); a.lcall('z_wst'); a.ldb_abs(X, LCD_D)   # ignores bit set / reset
+    a.orb(X, U); a.lcall('z_dat'); a.ldbi(X, 0xC4); a.lcall('z_cmd'); a.b(0xFB)
     a.ret()
 
     # ================= TOOLS > DUMP IC6: 256 SysEx messages F0 7D 49 half blk <256 nibbles> F7 =================
-    a.L('dump')
-    a.ldbi(T, 7); sta(ROW, T); a.lcall('tclr'); a.ldi_l(Q, 's_sending'); a.ldbi(T, 1); a.lcall('put')
-    a.lcall('tpush')
-    a.ldi_l(R1A, 'dump_send'); a.lcall(P4); a.ret()     # the sending runs from ROM page 4 (emit_p4)
+    a.L('g_fx')                                          # big FX pages, text rows 3-7: label | bar | value cells
+    a.cmpbi(U, 3); J('JNC', 'gf_r'); a.ldb(C, U); a.subbi(C, 3); a.addb(C, C); a.ldb(Z, V)
+    a.cmpbi(Z, 20); J('JNC', 'gf1'); a.incb(C); a.subbi(Z, 20)
+    a.L('gf1'); a.subbi(Z, 10); J('JNC', 'gf_r'); a.cmpbi(Z, 6); J('JC', 'gf_r')   # bar = byte columns 10-15
+    a.ldbze(IDX, C); a.ldb_lidx(C, IDX, FXBAR); a.cmpbi(C, 0xFF); J('JE', 'gf_r')
+    a.cmpbi(T, 2); J('JE', 'gf_o'); a.cmpbi(T, 6); J('JE', 'gf_o')                # outline rows
+    a.cmpbi(T, 3); J('JNC', 'gf_r'); a.cmpbi(T, 6); J('JC', 'gf_r')               # fill rows 3-5
+    a.ldb(Q, Z); a.ldbi(Q + 1, 6); a.b(0x7C, Q + 1, Q)  # MULUB Q, Q+1: px of this byte
+    a.subb(C, Q); J('JNC', 'gf_e'); J('JE', 'gf_e'); a.cmpbi(C, 6); J('JNC', 'gf_p'); a.ldbi(X, 0x3F); a.sjmp('gf_ed')
+    a.L('gf_p'); a.ldbze(IDX, C); a.ldb_lidx_l(X, IDX, 'gf_mask')
+    a.sjmp('gf_ed')
+    a.L('gf_o'); a.ldbi(X, 0x3F); a.ret()
+    a.L('gf_e'); a.clrb(X)
+    a.L('gf_ed'); a.cmpbi(Z, 0); J('JNE', 'gf_e2'); a.orbi(X, 0x20)
+    a.L('gf_e2'); a.cmpbi(Z, 5); J('JNE', 'gf_r'); a.orbi(X, 0x01)
+    a.L('gf_r'); a.ret()
+    a.L('gf_mask'); a.data(bytes([0x00, 0x20, 0x30, 0x38, 0x3C, 0x3E]))
 
-    # ================= LCD =================
-    a.L('wst'); a.ldb_abs(ST, LCD_C); a.andbi(ST, 3); a.cmpbi(ST, 3); J('JNE', 'wst'); a.ret()
-    a.L('wauto'); a.ldb_abs(ST, LCD_C); a.jbc(ST, 3, 'wauto'); a.ret()
-    a.L('cmd'); a.lcall('wst'); a.stb_abs(LCD_C, X); a.ret()
-    a.L('dat'); a.lcall('wst'); a.stb_abs(LCD_D, X); a.ret()
-    a.L('setaddr'); a.ldb(X, W); a.lcall('dat'); a.ldb(X, W + 1); a.lcall('dat'); a.ldbi(X, 0x24); a.sjmp('cmd')
-    emit_wave(a, J, lda, sta, ldw, stw)
-    emit_wavesel(a, J, lda, sta, ldw, stw, stock)
+    a.L('fx_band')                                       # gfx row ROW of a big FX page: C set = GBUF built here
+    lda(T, FXM); a.ldbi(U, 32); a.cmpbi(T, 2); J('JNE', 'fb0'); a.ldbi(U, 24)
+    a.L('fb0'); lda(T, ROW); a.cmpb(T, U); J('JNC', 'fb1'); a.b(0xF8); a.ret()     # below the band: CLRC
+    a.L('fb1'); a.ldi(P, GBUF); a.ldbi(C, 40); a.clrb(X)
+    a.L('fb2'); a.stb_pi(P, X); a.decb(C); J('JNE', 'fb2')
+    a.clrb(T); sta(FB_S, T)
+    a.L('fb_s')                                          # slot S: name FXN0 / FXN1
+    a.ldi(Q, FXN0); lda(T, FB_S); a.cmpbi(T, 0); J('JE', 'fb3'); a.ldi(Q, FXN1)
+    a.L('fb3'); a.clrb(T)                                # T = length (up to 10, FF ends it)
+    a.L('fb4'); a.ldbze(IDX, T); a.add(IDX, Q); a.ldb_idx(U, IDX, 0); a.cmpbi(U, 0xFF); J('JE', 'fb5')
+    a.incb(T); a.cmpbi(T, 10); J('JNE', 'fb4')
+    a.L('fb5'); sta(FB_N, T)
+    lda(U, FXM); a.cmpbi(U, 1); J('JNE', 'fb6')
+    a.ldbi(U, 24); a.b(0x5C, U, T, W); a.ldi(P, 240); a.sjmp('fb7')    # single: 24 px a char, 240 wide
+    a.L('fb6'); a.ldbi(U, 12); a.b(0x5C, U, T, W); a.ldi(P, 120)       # double: 12 px a char, 120 wide
+    a.L('fb7'); a.sub(P, W); a.shr(P, 1)                 # left margin
+    lda(T, FB_S); a.cmpbi(T, 0); J('JE', 'fb8'); a.addi(P, 120)
+    a.L('fb8'); stw(FB_X, P)
+    lda(T, FXM); a.ldbi(U, 1); a.ldbi(C, 5); a.cmpbi(T, 1); J('JE', 'fb9'); a.ldbi(U, 3); a.ldbi(C, 3)
+    a.L('fb9'); lda(T, ROW); a.subb(T, U); J('JNC', 'fb_inv')      # y0: 1 (single) / 3 (double)
+    a.ldbze(W, T); a.b(0x9C, C, W); a.ldb(T, W); a.incb(T)  # DIVUB W, C: glyph row 1..
+    a.cmpbi(T, 7); J('JC', 'fb_inv'); sta(FB_R, T)
+    a.clrb(T); sta(FB_I, T)
+    a.L('fb_c'); lda(T, FB_I); lda(U, FB_N); a.cmpb(T, U); J('JC', 'fb_inv')
+    a.ldbze(IDX, T); a.add(IDX, Q); a.ldb_idx(T, IDX, 0)    # the char -> its CG RAM row: 0x1800 + 8 * code + r
+    a.ldbze(W, T); a.shl(W, 3); lda(T, FB_R); a.ldbze(IDX, T); a.add(W, IDX); a.addi(W, 0x1800)
+    a.push(Q); a.lcall('z_setaddr'); a.ldbi(X, 0xC5); a.lcall('z_cmd'); a.lcall('z_wst'); a.ldb_abs(T, LCD_D)
+    a.pop(Q); sta(FB_G, T)
+    a.ldbi(C, 0x10)                                      # glyph bits 4..0 = its 5 columns, bit 4 leftmost
+    a.L('fb_b'); lda(T, FB_G); a.andb(T, C); J('JE', 'fb_bn')
+    lda(T, FXM); a.ldbi(U, 4); a.cmpbi(T, 1); J('JE', 'fb_b1'); a.ldbi(U, 2)
+    a.L('fb_b1'); ldw(W, FB_X)                           # U px wide from FB_X
+    a.L('fb_px'); a.ld(P, W); a.b(0x9D, 6, P)            # DIVUB P, #6: P = byte, P+1 = px in it
+    a.ldbze(IDX, P + 1); a.ldb_lidx_l(T, IDX, 'fb_bit'); a.ldbze(IDX, P); a.ldb_lidx(X, IDX, GBUF); a.orb(X, T)
+    a.stb_lidx(IDX, GBUF, X); a.inc(W); a.decb(U); J('JNE', 'fb_px')
+    a.L('fb_bn'); lda(T, FXM); ldw(W, FB_X); a.addi(W, 2); a.cmpbi(T, 1); J('JNE', 'fb_b2'); a.addi(W, 2)
+    a.L('fb_b2'); stw(FB_X, W); a.shrb(C, 1); J('JNE', 'fb_b')
+    lda(T, FXM); ldw(W, FB_X); a.addi(W, 2); a.cmpbi(T, 1); J('JNE', 'fb_b3'); a.addi(W, 2)
+    a.L('fb_b3'); stw(FB_X, W)                           # + the blank 6th column
+    lda(T, FB_I); a.incb(T); sta(FB_I, T); a.sjmp('fb_c')
+    a.L('fb_inv'); lda(T, FB_S); a.incb(T); lda(U, FXI); a.cmpb(T, U); J('JNE', 'fb_nx')   # selected: inverted
+    a.ldi(P, GBUF); a.ldbi(C, 40); lda(U, FXM); a.cmpbi(U, 1); J('JE', 'fb_iv'); a.ldbi(C, 20)
+    lda(T, FB_S); a.cmpbi(T, 0); J('JE', 'fb_iv'); a.ldi(P, GBUF + 20)
+    a.L('fb_iv'); a.ldb_idx(X, P, 0); a.b(0x95, 0x3F, X); a.stb_pi(P, X); a.decb(C); J('JNE', 'fb_iv')
+    a.L('fb_nx'); lda(T, FB_S); a.incb(T); sta(FB_S, T); lda(U, FXM); a.cmpb(T, U); J('JNE', 'fb_s')
+    a.b(0xF9); a.ret()                                   # SETC: row built
+    a.L('fb_bit'); a.data(bytes([0x20, 0x10, 0x08, 0x04, 0x02, 0x01]))
+
+    # LCD helpers, page-0 copies of page 7's (interrupts off for the row write, like row40)
+    a.L('z_wst'); a.ldb_abs(ST, LCD_C); a.andbi(ST, 3); a.cmpbi(ST, 3); J('JNE', 'z_wst'); a.ret()
+    a.L('z_wauto'); a.ldb_abs(ST, LCD_C); a.jbc(ST, 3, 'z_wauto'); a.ret()
+    a.L('z_cmd'); a.lcall('z_wst'); a.stb_abs(LCD_C, X); a.ret()
+    a.L('z_dat'); a.lcall('z_wst'); a.stb_abs(LCD_D, X); a.ret()
+    a.L('z_setaddr'); a.ldb(X, W); a.lcall('z_dat'); a.ldb(X, W + 1); a.lcall('z_dat'); a.ldbi(X, 0x24); a.sjmp('z_cmd')
+    a.L('z_row40')                                       # 40 bytes from [P] to LCD address W, interrupts off
+    a.b(0xFA); a.lcall('z_setaddr'); a.ldi(Q, 40); a.ldbi(X, 0xB0); a.lcall('z_cmd')
+    a.L('z_tp1'); a.lcall('z_wauto'); a.ldb_pi(X, P); a.stb_abs(LCD_D, X); a.dec(Q); J('JNE', 'z_tp1')
+    a.ldbi(X, 0xB2); a.lcall('z_cmd'); a.b(0xFB); a.ret()
 
 
-def emit_p4(a):
-    """TOOLS > DUMP IC6, the sending part: ROM page 4 (reached through the page-4 stub; IC6_RD puts R54 = 4
-    back in the window). 256 SysEx blocks F0 7D 49 hi lo <128 bytes as nibbles> F7, 0.4 ms per byte."""
+PF_ORG, PF_END = 0x72EF, 0x7390   # fixed ROM (the cut DSP PEEK helpers): menu code moved off the full page 7
+
+
+def emit_pf(a):
+    """menu code in fixed ROM (always visible, calls page 7 directly while the menu runs): the WAVE page items"""
     J = a.jcc
     def lda(r, addr): a.ldb_abs(r, addr)
     def sta(addr, r): a.stb_abs(addr, r)
     def ldw(r, addr): a.ld_lidx(r, 0, addr)
     def stw(addr, r): a.st_lidx(0, addr, r)
-    def far(label): a.ldi_l(R1A, label); a.lcall(0x105F)
-    emit_wave_view(a, J, lda, sta, ldw, stw, far)
-    # stock key read, filtered: stock acts on a key in the same pass it scans it, so PCM CARD (menu closed) is
-    # taken here, before any stock screen sees it; rt_ui opens the wave page on its next pass
-    a.L('gk_hook'); a.lcall(GK_STOCK); J('JNC', 'gk_r')
-    a.cmpbi(T, K_CARDB); J('JNE', 'gk_s')
-    lda(IDX, M_ON); a.cmpbi(IDX, 0); J('JNE', 'gk_s')
-    a.ldbi(IDX, 1); sta(CARDQ, IDX); a.b(0xF8); a.ret()   # CLRC: no key for stock
-    a.L('gk_s'); a.b(0xF9)                               # SETC: the key, as stock returned it
-    a.L('gk_r'); a.ret()
-    a.L('dump_send')
-    a.clrb(T); sta(I, T)                                 # I = block 0..255 (128 bytes each)
-    a.L('db')
-    for v in (0xF0, 0x7D, 0x49): a.ldbi(X, v); a.lcall('tx')
-    lda(X, I); a.shrb(X, 7); a.lcall('tx'); lda(X, I); a.andbi(X, 0x7F); a.lcall('tx')
-    a.clrb(T); sta(NI, T)
-    a.L('dn')
-    lda(T, I); a.ldbze(W, T); a.andbi(W, 0x7F); a.shl(W, 7); lda(T, NI); a.ldbze(IDX, T); a.add(W, IDX)
-    a.addi(W, 0x8000); lda(T, I); a.shrb(T, 7); a.orbi(T, 0x20)
-    a.lcall(IC6_RD)                                      # fixed-ROM helper: bank T, address W -> V
-    sta(VAL, V); a.ldb(X, V); a.shrb(X, 4); a.lcall('tx'); lda(X, VAL); a.andbi(X, 0x0F); a.lcall('tx')
-    lda(T, NI); a.incb(T); sta(NI, T); a.cmpbi(T, 128); J('JNE', 'dn')
-    a.ldbi(X, 0xF7); a.lcall('tx')
-    lda(T, I); a.incb(T); sta(I, T); a.cmpbi(T, 0); J('JNE', 'db'); a.ret()
-    a.L('tx'); a.b(0xC4, SBUF_, X); a.ld(C, TIMER1_)    # 0.4 ms per byte (31250 baud = 0.32 ms)
-    a.L('txw'); a.ld(P, TIMER1_); a.sub(P, C); a.cmpi(P, 300); J('JNC', 'txw'); a.ret()
+    def stock(fn, stub): a.ldi(R1A, fn); a.lcall(stub)
+    emit_wavesel(a, J, lda, sta, ldw, stw, stock)
+    a.L('p0stub')                                        # far call into ROM page 0 at [R1A], like stock's 0x1050-0x105F
+    a.push(0x54); a.b(0xC9, 0xE9, 0x16); a.clr(0x54); a.stb_abs(0x0100, 0x54); a.b(0xE3, R1A)   # PUSH #16E9 ; BR [R1A]
 
 
-# ================= data: page tables, items and strings, packed into the freed page-7 blocks =================
 DATA_SEGS = [(0xAD4E, 0xB289), (0xBA0A, 0xBCA6), (0xBF23, 0xBFFF),   # page 7, inclusive (cuts.py)
              (END + 1, 0x9C47),                                     # + the top of the code block
              (0x18F0, 0x1991), (0x75B0, 0x7613),   # freed fixed ROM: readable from any page
-             (0x72EF, 0x73B1)]                     # the DSP PEEK helpers (cut in 0.10)
+             (PF_END + 1, 0x73B1)]                 # the DSP PEEK helpers' block (cut in 0.10) after the PF code
 
 
 def s_(d, name, text): d.L(name); d.data(bytes(text, 'ascii') + bytes([0xFF]))
@@ -1071,7 +1257,7 @@ def emit_wave_view(a, J, lda, sta, ldw, stw, far):
     a.L('wv13'); stw(V_ACC, Q); a.decb(C); J('JNE', 'wv_byte')
     a.ldi(W, 2047); a.sub(W, Q); a.shr(W, 6); a.ldbi(U, WH); a.b(0x7C, U, W); a.shr(W, 6)   # y = WY0 + (2047-acc)/64*WH/64
     a.addi(W, WY0); ldw(P, LX1); stw(LX0, P); a.inc(P); stw(LX1, P)
-    ldw(P, LY1); stw(LY0, P); stw(LY1, W); far('seg')
+    ldw(P, LY1); stw(LY0, P); stw(LY1, W); a.ldi_l(R1A, 'seg'); a.lcall('p0stub')   # page 0
     lda(T, V_COL); a.incb(T); sta(V_COL, T); a.cmpbi(T, 119); J('JNE', 'wv_col')
     a.ret()
 

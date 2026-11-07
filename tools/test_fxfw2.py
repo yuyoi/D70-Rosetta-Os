@@ -24,6 +24,8 @@ def main():
             assert img[f:f + len(blob)] == blob, 'engine in the image differs at %04X' % org
     st, _ = fx2.stock()
     s = LabSim(bytes(img)); s.word = dict(st); ok = True
+    p3 = []                                                         # stock page-3 calls (full upload / reload)
+    s.hooks[0x1053] = lambda sm: (p3.append(sm.rw(0x1A)), True)[1]
     for c in range(32): s.cell[c] = 0x5A5A5A
     def setr(a, v): s.ram[a - 0xC000] = v
     def ram(a): return s.ram[a - 0xC000]
@@ -38,7 +40,7 @@ def main():
         return sum(1 for o, v in s.rcc if o in (4, 6))               # chip writes
 
     def single(name, vals, mix):
-        setr(FX.RAM_BASE + FX.S_SEL, 0); setr(FX.RAM_BASE + FX.S_TYPE, FX.N_CHO + FX.SINGLE_NAMES.index(name))
+        setr(FX.RAM_BASE + FX.S_SEL, 0); k = FX.SINGLE_NAMES.index(name); setr(FX.RAM_BASE + FX.S_TYPE, FX.N_CHO + k if k else 0)   # 0 = OFF, 1-5 = chorus
         flat = [v for x in vals for v in x]
         for i, v in enumerate(flat): setr(FX.RAM_BASE + FX.S_P + i, v)
         setr(FX.RAM_BASE + FX.S_MIX, mix)
@@ -64,7 +66,7 @@ def main():
         bad = same(ch, vals, mix, before, new_chain)
         check(label, not bad, '' if not bad else '  ' + ' | '.join(bad[:4]))
 
-    setr(FX.RAM_BASE + FX.S_TYPE, 2); n = poll()
+    setr(FX.RAM_BASE + FX.S_TYPE, 3); n = poll()
     check('SINGLE CHORUS 3: no chip writes, nothing applied', n == 0 and ram(FX.FX_APP) == 0)
     chains = fx2.all_chains()
     for name in FX.SINGLE_NAMES:
@@ -81,8 +83,9 @@ def main():
     for an in FX.DOUBLE_A:
         for bn in FX.DOUBLE_B:
             if not fx2.pair_ok(an, bn):
-                double(an, bn, [3], [3, 3], 8); n = poll()
-                check('DOUBLE %s > %s (not allowed): nothing applied' % (an, bn), n == 0 and ram(FX.FX_APP) == 0)
+                p3.clear(); double(an, bn, [3], [3, 3], 8); n = poll()
+                check('DOUBLE %s > %s (not allowed): box off, stock back' % (an, bn), n == 0 and ram(FX.FX_APP) == 0
+                      and p3 in ([], [0x8000, 0x8003]))
                 continue
             ch = chains['D:%s>%s' % (an, bn)]
             recs = ch['recs'][1:]
@@ -98,8 +101,13 @@ def main():
     check('CUTOFF out of range clamps to the top', not same(ch, [[], [fx2.CUT_N - 1, 5]], 12, before, False))
     single('LPF', [[], [10, 5]], 99); before = dict(s.word); poll()
     check('MIX out of range = full wet', not same(ch, [[], [10, 5]], 15, before, False))
-    setr(FX.RAM_BASE + FX.S_TYPE, 0); n = poll()
-    check('back to CHORUS 1: no writes, not applied', n == 0 and ram(FX.FX_APP) == 0)
+    s.reg[FX.RA3] = 1; before = dict(s.word); n = poll()               # stock reload fading: hands off, mark
+    check('stock reload running: no writes, re-apply marked', n == 0 and ram(FX.FX_APP) == 0xFF)
+    s.reg[FX.RA3] = 0; poll(); bad = same(ch, [[], [10, 5]], 15, before, True)
+    check('reload done: everything applied again', not bad, ' '.join(bad[:3]))
+    p3.clear(); setr(FX.RAM_BASE + FX.S_TYPE, 1); n = poll()
+    check('back to CHORUS 1: stock full upload + reload, box off', p3 == [0x8000, 0x8003] and ram(FX.FX_APP) == 0, p3)
+    p3.clear(); n = poll(); check('  box off stays off: no writes, no upload', n == 0 and p3 == [])
     setr(FX.RAM_BASE + FX.S_SEL, 7); n = poll(); check('SEL out of range = off', n == 0)
     n = 0
     for _ in range(600):                                            # fx_tick: one poll every 256 empty reads

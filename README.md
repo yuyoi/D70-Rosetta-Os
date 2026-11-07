@@ -18,8 +18,8 @@ and layer structure out, our own engine, menus and live controls in.
 It's the same Rosetta boot as the [SP-808 Rosetta OS](https://github.com/yuyoi/Sp-808-rosetta-looper-OS-) and the
 [Sony HR-GP5 Rosetta OS](https://github.com/yuyoi/Sony-HR-GP5-Rosetta-OS), now on a Roland synth.
 
-> **Work in progress.** v0.10 is burned and running on a real D-70: our own effects (SINGLE / DOUBLE on the
-> effects chip), custom U-110 cards with a BANK row, and the keyboard fix (keys no longer die while editing).
+> **Work in progress.** v0.11 is burned and running on a real D-70: big effects pages, OFF in every effect,
+> REVERB as its own item, QUICK PLAY with a LAYERS row, and the fix for the sound cutting out after effect edits.
 > Keep your original EPROMs.
 
 > **Made by JunkSmithWizard (JSW) together with Claude (Anthropic's AI).** Claude did the reverse engineering
@@ -30,6 +30,13 @@ It's the same Rosetta boot as the [SP-808 Rosetta OS](https://github.com/yuyoi/S
 
 **Legal:** this repo contains no Roland code or ROM data. You dump **your own** unit's EPROMs and the tools patch
 them on your PC. Don't share dumps or builds: share this repo instead.
+
+## Photos
+
+On the real D-70 (v0.11):
+
+<p align="center"><img src="docs/photos/d70_fx_single_chorus1.jpg" width="360" alt="CHORUS 1 effects page on the D-70"> <img src="docs/photos/d70_fx_single_crush.jpg" width="360" alt="CRUSH effects page on the D-70"></p>
+<p align="center"><img src="docs/photos/d70_fx_double_drive_rectify.jpg" width="360" alt="DOUBLE effects page: DRIVE into RECTIFY"> <img src="docs/photos/d70_custom_u110_card.jpg" width="360" alt="Home-milled U-110 card in PCM CARD A"></p>
 
 ## Previews
 
@@ -55,7 +62,7 @@ uses the LCD's own font; the previews use a stand-in, and the tone names are mad
 | **Knob lock** (SETTINGS): slider 1 grabs the parameter you're on and keeps driving it after you leave the menu | built, sim checked |
 | [EFFECT/CTRL] and [MIDI OUT] open the Rosetta pages; stock tone / rhythm / effector / MIDI / D.Xfer screens are cut (4 KB) and their menu numbers open Rosetta instead | built, sim + MAME checked |
 | Edits go through Roland's own SysEx parameter code: every value is checked, clamped and applied like an incoming SysEx message | works on hardware |
-| **Boot menu** (hold [EDIT] at power-on): BOOT, SLIDERS, TOOLS, ABOUT | works on hardware |
+| **Boot menu** (hold [EDIT] at power-on) | cut in v0.11: its space now holds the menu graphics engine |
 | **Common sliders**: LOWER 1 = CUTOFF, LOWER 2 = RESONANCE, UPPER 3 = ATTACK, UPPER 4 = RELEASE, each on all four layers | **works on hardware** |
 | **TOOLS > DUMP IC6 OVER MIDI**: battery RAM out as SysEx, `tools/ic6_decode.py` turns it back into a file | built, decode is byte-exact in the sim |
 | ROM PLAY demo removed: **6.3 KB** of page 7 free (now holds the sliders and the SYNTH menu) | built |
@@ -68,6 +75,9 @@ uses the LCD's own font; the previews use a stand-in, and the tone names are mad
 | **Custom U-110 cards**: the D-70 only takes a card whose header name starts `SN-U110-` (the U-110 takes any name). Build cards with [u110-romhex-studio](https://github.com/yuyoi/u110-romhex-studio); this build also accepts any name | **works on hardware** |
 | **Keyboard fix**: the boot animation runs with interrupts off and the stock boot then clears pending interrupts, which could leave the key scan chip waiting forever (keys dead, MIDI fine). The player now drains the chip like Roland's own buffer-full recovery, and every main-loop pass repairs the keyboard queue / interrupt mask | **works on hardware** |
 | **DLM** in the SYNTH menu; **DSP LAB command 5** reads CPU memory (`dsp/dsplab.py mem ADDR`, `keys`) | built, sim checked |
+| **Big effects pages** (v0.11): the effect name drawn huge from the D-70's own font, params as bar meters. EFFECTS = SINGLE (one effect, OFF / CHORUS 1-5 / ours), DOUBLE (box A into box B, side by side), REVERB (own item, OFF = level 0). Every effect starts OFF | **works on hardware** (v0.11); the graphics sit a row off the labels on the real LCD, fix next |
+| **Sound-cut fix** (v0.11): the effects engine no longer uses registers the stock interrupts overwrite, waits out stock effect reloads and restores the full stock program when an effect goes OFF | **works on hardware** (v0.11), long-run test going |
+| **QUICK PLAY** = one sound, with a **LAYERS** row (1-4, L1 = the base) on the wave page | **works on hardware** (v0.11) |
 | Firmware map: banks, LCD, keys, sliders, parameters, free space ([docs/FINDINGS.md](docs/FINDINGS.md)) | first pass |
 
 ## Roadmap

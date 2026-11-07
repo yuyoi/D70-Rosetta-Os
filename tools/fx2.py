@@ -436,16 +436,16 @@ A_MODES = {'THRU': a_thru, 'DRIVE': a_drive, 'DECIMATE': a_decimate}
 B_MODES = {'THRU': b_thru, 'DRIVE': b_drive, 'CRUSH': b_crush, 'RECTIFY': b_rectify,
            'LPF': lambda: b_filter('lpf'), 'BPF': lambda: b_filter('bpf'), 'HPF': lambda: b_filter('hpf')}
 FULL_MODES = {'S_DRIVE': s_drive, 'S_CRUSH': s_crush}
-SINGLE = {'DRIVE': 'S_DRIVE', 'DECIMATE': ('DECIMATE', 'THRU'), 'CRUSH': 'S_CRUSH', 'RECTIFY': ('THRU', 'RECTIFY'),
+SINGLE = {'OFF': ('THRU', 'THRU'), 'DRIVE': 'S_DRIVE', 'DECIMATE': ('DECIMATE', 'THRU'), 'CRUSH': 'S_CRUSH', 'RECTIFY': ('THRU', 'RECTIFY'),
           'LPF': ('THRU', 'LPF'), 'BPF': ('THRU', 'BPF'), 'HPF': ('THRU', 'HPF'), 'LO-FI': ('DECIMATE', 'CRUSH')}
-DOUBLE_A = ('DRIVE', 'DECIMATE')
-DOUBLE_B = ('DRIVE', 'CRUSH', 'RECTIFY', 'LPF', 'BPF', 'HPF')
+DOUBLE_A = ('THRU', 'DRIVE', 'DECIMATE')                      # THRU = OFF on the D-70's pages
+DOUBLE_B = ('THRU', 'DRIVE', 'CRUSH', 'RECTIFY', 'LPF', 'BPF', 'HPF')
 
 
 def pair_ok(an, bn):
     """box 2 modes allowed after box 1 mode an (the DOUBLE page skips the rest)"""
     if bn == 'CRUSH': return an == 'DECIMATE'                  # crushing a clipped square does nothing
-    return an != bn
+    return an != bn or an == 'THRU'                             # OFF > OFF is fine
 
 
 # ---- compile: a recipe -> its program (gains folded in as registers) + field entries ----

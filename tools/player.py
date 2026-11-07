@@ -28,7 +28,7 @@ KEY_EDIT = 0xD37D          # stock power-on key bank 5, bit 7 = [EDIT]
 KEY_EXIT = 0xD37C          # bank 4, bit 7 = [EXIT]
 MENU_ON = 0xC400           # synth.py M_ON: 2 = open on the first main-loop pass
 # fxfw2.py C630-C63A: SEL TYPE P1 P2 MIX | D_A D_AP D_B D_BP1 D_BP2 D_MIX
-FX_DEFAULTS = [0, 0, 8, 8, 10, 1, 4, 1, 8, 4, 12]
+FX_DEFAULTS = [0, 0, 8, 8, 10, 0, 4, 0, 8, 4, 12]   # SINGLE OFF; DOUBLE OFF > OFF
 TIMER1, INT_PEND, R54, RA2 = 0x0A, 0x09, 0x54, 0xA2
 
 
@@ -60,8 +60,6 @@ def build():
     a.ljmp('fl')
     # ---- end: clear graphics, put RAM1 back, clear the gap, restore display mode
     a.L('done')
-    a.ldb_abs(T, KEY_EDIT); a.jbc(T, 7, 'nomenu'); a.lcall(MENU)   # [EDIT] held at power-on: ROSETTA menu
-    a.L('nomenu')
     a.ldi(AD, 0); a.lcall('setaddr'); a.ldi(L, GB); a.lcall('aw_zero')
     a.ldi(AD, GAP); a.lcall('setaddr'); a.ldi(P, BUF); a.ldi(L, SGB); a.lcall('rd_ram')
     a.ldi(AD, GAP); a.lcall('setaddr'); a.ldi(L, SGB); a.lcall('aw_zero')

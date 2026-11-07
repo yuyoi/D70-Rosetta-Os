@@ -25,20 +25,20 @@ RAM_BASE = 0xC600
 S_SEL, S_TYPE, S_P, S_MIX = 0x30, 0x31, 0x32, 0x34            # SEL 0 SINGLE / 1 DOUBLE; SINGLE type, 2 params, MIX
 D_A, D_AP, D_B, D_BP, D_MIX = 0x35, 0x36, 0x37, 0x38, 0x3A    # DOUBLE box 1 type + param, box 2 type + 2 params, MIX
 N_SET = 11                                                     # C630-C63A
-N_CHO = 5                                                      # SINGLE types 0-4 = stock CHORUS 1-5 (box off)
+N_CHO = 5                                                      # SINGLE types: 0 OFF, 1-5 stock CHORUS 1-5 (box off), 6+ ours
 FX_APP, FX_APB, FX_CNT, FX_FULL, FX_SNAP = 0xC6C0, 0xC6C1, 0xC6C2, 0xC6C3, 0xC6C4   # snapshot C6C4-C6CE
 REGS = 0xC6D0                                                  # 24 log registers, C6D0-C6FF
 N_REGS = 24
 TICK_ORG, TICK_END = 0x23E0, 0x23FF               # fixed ROM after the player (it ends ~0x23D2)
 P4_BLOCKS = [(0x8B0D, 0x8F2F), (0x9869, 0x9AE8), (0x82A5, 0x8502), (0x9B49, 0x9C33), (0xBE54, 0xBFFF),
              (0x9700, 0x97AE),
-             (0x9640, 0x96FF)]                    # the top of the arp / menu page-4 block (arp.IN_END = 0x963F)
+             (0x9600, 0x96FF)]                    # the top of the arp / menu page-4 block (arp.IN_END = 0x95FF)
 STUB4 = 0x1056
 RCC = 0x0A00
 OPS = {'CUR': 1, 'ADD': 2, 'SUB': 3, 'MINK': 4, 'MAXK': 5, 'ADDK': 6}
 TEMP_CELLS = sorted(set(fx2.SCRATCH + fx2.KEEP) - {fx2.PARK_CELL})
 
-SINGLE_NAMES = list(fx2.SINGLE)                                # menu order after CHORUS 1-5
+SINGLE_NAMES = list(fx2.SINGLE)                                # OFF first, the rest come after CHORUS 1-5
 DOUBLE_A, DOUBLE_B = list(fx2.DOUBLE_A), list(fx2.DOUBLE_B)
 
 
@@ -171,9 +171,12 @@ T, U, A, N = 0x1C, 0x1D, 0x1E, 0x1F                # bytes
 P, Q = 0x20, 0x22                                  # list / table pointers
 WH, WM, WL, G = 0x24, 0x25, 0x26, 0x27             # word read, gain flags
 X, Y, IDX, Z = 0x28, 0x2A, 0x2C, 0x2E              # value, param base, index, scratch (words)
-MH, MM, K2, MXO = 0x30, 0x31, 0x32, 0x33
-RA, RB, PA, PB = 0x34, 0x35, 0x36, 0x37
-SAVED = (0x1C, 0x1E, 0x20, 0x22, 0x24, 0x26, 0x28, 0x2A, 0x2C, 0x2E, 0x30, 0x32, 0x34, 0x36)
+# R30-R4F belong to stock interrupt code (timer: LDB R34,#FE for active sensing; A/D: R36/R37; keys: R32/R33/R4E;
+# MIDI RX: R30), and fx_poll runs with interrupts on: its own working registers live at R60-R67 (no ISR touches them)
+MH, MM, K2, MXO = 0x60, 0x61, 0x62, 0x63
+RA, RB, PA, PB = 0x64, 0x65, 0x66, 0x67
+SAVED = (0x1C, 0x1E, 0x20, 0x22, 0x24, 0x26, 0x28, 0x2A, 0x2C, 0x2E, 0x60, 0x62, 0x64, 0x66)
+RA3 = 0xA3                                         # stock effects reload (p3 B165): 1, 2, ... while it fades, then 0
 
 
 def emit_tick(a):
@@ -186,22 +189,31 @@ def emit_tick(a):
 
 def emit_engine(a, nsingle):
     J = a.jcc
+    nrec = len(recipes())
     lda, sta = a.ldb_abs, a.stb_abs
     a.L('fx_poll')
     for r in SAVED: a.push(r)
+    a.ldb(T, RA3); a.cmpbi(T, 0); J('JE', 'fp_go')     # stock reload running (reverb edit, performance, SysEx):
+    lda(T, FX_APP); a.cmpbi(T, 0); J('JE', 'fp_x')     # it half-rewrites the box words, so once it is done
+    a.ldbi(T, 0xFF); sta(FX_APP, T); a.sjmp('fp_x')    # everything goes on again (FF never matches RA + 1)
+    a.L('fp_go')
     lda(T, RAM_BASE + S_SEL); a.cmpbi(T, 0); J('JNE', 'fp_d')
-    lda(U, RAM_BASE + S_TYPE); a.subbi(U, N_CHO); a.cmpbi(U, nsingle); J('JC', 'fp_off')   # CHORUS 1-5: off
+    lda(U, RAM_BASE + S_TYPE); a.cmpbi(U, 0); J('JE', 'fp_s')                    # TYPE 0 = OFF (THRU > THRU)
+    a.subbi(U, N_CHO); J('JE', 'fp_off'); a.cmpbi(U, nsingle); J('JC', 'fp_off')   # 1-5 = stock CHORUS 1-5: off
+    a.L('fp_s')
     a.ldbze(IDX, U); a.shl(IDX, 2)
     for i, r in enumerate((RA, RB, PA, PB)): a.ldb_lidx_l(r, IDX, 'fx_stab', i)
     a.ldbi(MXO, S_MIX); a.sjmp('fp_on')
     a.L('fp_d'); a.cmpbi(T, 1); J('JNE', 'fp_off')
     lda(U, RAM_BASE + D_A); a.cmpbi(U, len(DOUBLE_A)); J('JC', 'fp_off')
     lda(A, RAM_BASE + D_B); a.cmpbi(A, len(DOUBLE_B)); J('JC', 'fp_off')
-    a.ldbze(IDX, A); a.shl(IDX, 1); a.ldbze(Z, U); a.add(IDX, Z)
+    a.ldbze(IDX, A); a.b(0x6D, len(DOUBLE_A), 0x00, IDX); a.ldbze(Z, U); a.add(IDX, Z)   # MULU: B * len(A) + A
     a.ldb_lidx_l(T, IDX, 'fx_dbok'); a.cmpbi(T, 0); J('JE', 'fp_off')
     a.ldbze(IDX, U); a.ldb_lidx_l(RA, IDX, 'fx_da'); a.ldbze(IDX, A); a.ldb_lidx_l(RB, IDX, 'fx_db')
     a.ldbi(PA, D_AP); a.ldbi(PB, D_BP); a.ldbi(MXO, D_MIX)
-    a.L('fp_on')
+    a.L('fp_on'); a.cmpbi(RA, nrec); J('JC', 'fp_off')     # recipe numbers in range, or nothing runs
+    a.cmpbi(RB, 0xFF); J('JE', 'fp_ok'); a.cmpbi(RB, nrec); J('JC', 'fp_off')
+    a.L('fp_ok')
     lda(T, FX_APP); a.cmpbi(T, 0); J('JE', 'fp_new')
     a.ldbi(A, 0x19); a.lcall('fx_rd'); a.shrb(WM, 1); a.andbi(WM, 31); a.cmpbi(WM, 24); J('JE', 'fp_new')   # reloaded
     lda(T, FX_APP); a.ldb(U, RA); a.incb(U); a.cmpb(T, U); J('JNE', 'fp_new')
@@ -218,7 +230,9 @@ def emit_engine(a, nsingle):
     a.inc(IDX); a.cmpi(IDX, N_SET); J('JNE', 'fp_cp')
     a.ldb(T, RA); a.incb(T); sta(FX_APP, T); sta(FX_APB, RB)
     a.lcall('fx_apply'); a.sjmp('fp_x')
-    a.L('fp_off'); a.clrb(T); sta(FX_APP, T)
+    a.L('fp_off'); lda(T, FX_APP); a.cmpbi(T, 0); J('JE', 'fp_x')   # box on -> off: stock program back in full
+    a.clrb(T); sta(FX_APP, T)                          # (the reload alone leaves box words behind)
+    a.ldi(0x1A, 0x8000); a.lcall(0x1053); a.ldi(0x1A, 0x8003); a.lcall(0x1053)   # p3 B098 full upload, B165 reload
     a.L('fp_x')
     for r in reversed(SAVED): a.pop(r)
     a.ret()
@@ -246,6 +260,7 @@ def emit_engine(a, nsingle):
     a.L('ap_x'); a.ret()
 
     a.L('ap_run')                                      # recipe T, params at C600 + U, A = 0 prog / 2 pre / 4 list
+    a.cmpbi(T, nrec); J('JC', 'ar_x')
     a.ldbze(IDX, T); a.ld(Z, IDX); a.add(IDX, IDX); a.add(IDX, Z); a.add(IDX, IDX)    # x 6
     a.ldbze(Z, A); a.add(IDX, Z); a.ld_lidx_l(P, IDX, 'fx_desc')
     a.ldbze(Y, U); a.addi(Y, RAM_BASE)
