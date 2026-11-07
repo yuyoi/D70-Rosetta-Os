@@ -130,11 +130,10 @@ uses the LCD's own font; the previews use a stand-in, and the tone names are mad
 **Easiest: Rosetta Patcher (Windows).** Download `RosettaPatcher-D70.exe` from the
 [Releases](https://github.com/yuyoi/D70-Rosetta-Os/releases) page and run it: no Python needed. Or, with Python 3
 (`pip install numpy pillow`), double-click `tools/Rosetta_Patcher.bat` (or run `python tools/rosetta_patcher.py`).
-Pick your IC4 and IC9 dumps (either order: it sorts them out) or one combined 128 KB file, your effects chip dump
-(step 3 below) and an output folder. It checks that they are v1.11, runs the whole build with every check (a few
-minutes) and writes the two images to burn. The Releases .exe is still v0.8 (no effects chip dump needed) until a
-new one is cut. Command line:
-`python -I tools/rosetta_patcher.py --even IC4.bin --odd IC9.bin --rcc rcc.txt --out outdir` (or `--both combined.bin`).
+Pick your IC4 and IC9 dumps (either order: it sorts them out) or one combined 128 KB file, and an output folder.
+That's all it needs: no effects chip dump (the firmware saves the chip's stock program itself at runtime). It checks
+that the dumps are v1.11, runs the whole build with every check (a few minutes) and writes the two images to burn.
+Command line: `python -I tools/rosetta_patcher.py --even IC4.bin --odd IC9.bin --out outdir` (or `--both combined.bin`).
 
 By hand:
 
@@ -143,15 +142,11 @@ By hand:
    The tools expect firmware **v1.11** (IC4 MD5 `3f9e12e8d73380a5c26c312940f1ff6e`,
    IC9 MD5 `640e279056386577499544f826df9253`) and refuse anything else.
 2. `pip install pillow numpy`
-3. **Dump your effects chip** (new in v0.9+; Roland's effect program isn't shipped, the effects tables are built from
-   your unit's): this needs DSP LAB on the D-70, so a first-time build goes v0.8 first (`git checkout 06ae533`,
-   build, burn), then `pip install mido python-rtmidi`, D-70 MIDI IN/OUT to your PC, stock effect type, and
-   `python dsp/dsplab.py --port "<your MIDI port>" dump rcc.txt`
-4. `python -I tools/boot_build.py dumps/IC4_even.bin dumps/IC9_odd.bin --rcc rcc.txt` (a few minutes, most of it the checks)
-5. **Burn two new chips and keep your originals.** 27C512 (we use W27C512):
+3. `python -I tools/boot_build.py dumps/IC4_even.bin dumps/IC9_odd.bin` (a few minutes, most of it the checks)
+4. **Burn two new chips and keep your originals.** 27C512 (we use W27C512):
    `build/D70_rosetta_v010_IC4_even.bin` goes in **IC4**, `build/D70_rosetta_v010_IC9_odd.bin` in **IC9**.
-6. Power off, swap the chips (notch the same way round), power on. It boots into ROSETTA OS. Hold **[EXIT]** while
-   switching on for the plain D-70, **[EDIT]** for the boot menu.
+5. Power off, swap the chips (notch the same way round), power on. It boots into ROSETTA OS. Hold **[EXIT]** while
+   switching on for the plain D-70.
 
 ## Tools
 

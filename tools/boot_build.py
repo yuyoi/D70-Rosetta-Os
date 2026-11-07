@@ -720,7 +720,7 @@ if __name__ == '__main__':
     ap.add_argument('odd', help='IC9 (odd) dump, 64 KB')
     ap.add_argument('--out', help='output folder (default: build/)')
     ap.add_argument('--frames', help='boot frames .npz (default: frames/roland_chan_frames.npz)')
-    ap.add_argument('--rcc', required=True, help='your effects chip dump: python dsp/dsplab.py --port <MIDI> dump rcc.txt')
+    ap.add_argument('--rcc', help='optional, not needed for the build: your effects chip dump (dsp/dsplab.py dump rcc.txt)')
     a = ap.parse_args()
     configure(a.even, a.odd, a.out, a.frames, a.rcc)
     try:
